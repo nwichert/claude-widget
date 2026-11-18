@@ -192,7 +192,7 @@ struct PanelView: View {
 
     @ViewBuilder private func insightsSection(_ data: Insights) -> some View {
         let total = max(1, data.projects.reduce(0) { $0 + $1.outputTokens })
-        let top = Array(data.projects.prefix(4))
+        let top = Array(data.projects.prefix(5))
         let ideas = (data.skillIdeas ?? []).filter { !settings.dismissedIdeas.contains($0.name) }
         VStack(alignment: .leading, spacing: 1) {
             sectionHeader("YOUR USAGE · LAST \(data.windowDays) DAYS") {
@@ -215,20 +215,21 @@ struct PanelView: View {
                 GeometryReader { geo in
                     HStack(spacing: 2) {
                         ForEach(Array(data.projects.enumerated()), id: \.element.id) { index, project in
-                            RoundedRectangle(cornerRadius: 1.5)
-                                .fill(Palette.text.opacity(Self.shade(index)))
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Self.color(for: project.name))
                                 .frame(width: max(2, (geo.size.width - CGFloat(data.projects.count - 1) * 2)
                                                   * CGFloat(project.outputTokens) / CGFloat(total)))
+                                .help("\(project.name): \(Int((Double(project.outputTokens) / Double(total) * 100).rounded()))% · \(Format.tokens(project.outputTokens)) tokens · \(project.sessions) sessions · \(project.prompts) prompts")
                         }
                     }
                 }
-                .frame(height: 5)
+                .frame(height: 8)
 
                 HStack(spacing: 10) {
                     ForEach(Array(top.enumerated()), id: \.element.id) { index, project in
                         HStack(spacing: 4) {
-                            RoundedRectangle(cornerRadius: 1.5)
-                                .fill(Palette.text.opacity(Self.shade(index)))
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Self.color(for: project.name))
                                 .frame(width: 7, height: 7)
                             Text("\(project.name) \(Int((Double(project.outputTokens) / Double(total) * 100).rounded()))%")
                                 .lineLimit(1)
@@ -237,7 +238,7 @@ struct PanelView: View {
                     Spacer(minLength: 0)
                 }
                 .font(.system(size: 10.5))
-                .foregroundStyle(Palette.text3)
+                .foregroundStyle(Palette.text2)
                 .monospacedDigit()
 
                 if let activities = data.activities, !activities.isEmpty {
@@ -261,8 +262,28 @@ struct PanelView: View {
         .padding(.horizontal, 6)
     }
 
-    private static func shade(_ index: Int) -> Double {
-        [0.85, 0.55, 0.36, 0.24][min(index, 3)]
+    /// Six project colours, checked for colour-blind separation and contrast on this background.
+    /// Orange and red are left out on purpose: clay already means "needs you" everywhere else.
+    private static let series: [Color] = [
+        Color(red: 0.224, green: 0.529, blue: 0.898),  // blue    #3987E5
+        Color(red: 0.098, green: 0.620, blue: 0.439),  // aqua    #199E70
+        Color(red: 0.788, green: 0.522, blue: 0.000),  // yellow  #C98500
+        Color(red: 0.835, green: 0.318, blue: 0.506),  // magenta #D55181
+        Color(red: 0.047, green: 0.639, blue: 0.047),  // green   #0CA30C
+        Color(red: 0.565, green: 0.522, blue: 0.914),  // violet  #9085E9
+    ]
+
+    /// A project keeps its colour for good: slots are handed out in the order projects are first
+    /// seen and remembered, so a project does not change colour when its rank changes. Projects
+    /// past the sixth share a neutral grey rather than a made-up seventh hue.
+    private static func color(for project: String) -> Color {
+        let key = "projectColorSlots"
+        var slots = (UserDefaults.standard.dictionary(forKey: key) as? [String: Int]) ?? [:]
+        if let slot = slots[project] { return slot < series.count ? series[slot] : Palette.text3 }
+        let slot = slots.count
+        slots[project] = slot
+        UserDefaults.standard.set(slots, forKey: key)
+        return slot < series.count ? series[slot] : Palette.text3
     }
 
     private func pullRequests(for row: SessionRow) -> [PullRequest] {
