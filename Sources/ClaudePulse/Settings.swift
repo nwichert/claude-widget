@@ -60,6 +60,11 @@ final class Settings: ObservableObject {
         didSet { defaults.set(notificationAccess, forKey: "notificationAccess") }
     }
 
+    /// Pull requests you have chosen to ignore: URL -> a label to show in settings.
+    @Published var ignoredPullRequests: [String: String] {
+        didSet { defaults.set(ignoredPullRequests, forKey: "ignoredPullRequests") }
+    }
+
     /// Sections folded shut in the panel, by id. Reference sections start folded.
     @Published var collapsedSections: [String] {
         didSet { defaults.set(collapsedSections, forKey: "collapsedSections") }
@@ -96,6 +101,7 @@ final class Settings: ObservableObject {
         showSkillIdeas = Self.bool(Key.showSkillIdeas, default: combined)
         showUsage = Self.bool(Key.showUsage, default: combined)
         showDuet = Self.bool(Key.showDuet, default: true)
+        ignoredPullRequests = (UserDefaults.standard.dictionary(forKey: "ignoredPullRequests") as? [String: String]) ?? [:]
         collapsedSections = UserDefaults.standard.stringArray(forKey: "collapsedSections") ?? ["skills", "usage"]
         dismissedIdeas = UserDefaults.standard.stringArray(forKey: Key.dismissedIdeas) ?? []
         hiddenChats = UserDefaults.standard.stringArray(forKey: Key.hiddenChats) ?? []

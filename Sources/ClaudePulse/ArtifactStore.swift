@@ -17,6 +17,8 @@ struct ArtifactItem: Identifiable, Equatable, Decodable {
 
     /// Set by the store, not the file: when this shared artifact first appeared, if that was recent.
     var newShareAt: Date?
+    /// Set by the store: someone other than you has commented since you last opened it from the widget.
+    var hasNewComments = false
 
     private enum CodingKeys: String, CodingKey {
         case title, url, owner, updated, threads, openThreads, mentions, lastCommentAt, lastCommentBy, mentionPreview
@@ -59,6 +61,104 @@ final class ArtifactStore: ObservableObject {
     /// How long a newly shared artifact keeps its "new" label.
     private let newShareWindow: TimeInterval = 3 * 86_400
     private let knownKey = "knownSharedArtifacts"   // url -> first seen (seconds since 1970)
+    private let dismissedKey = "dismissedMentions"  // url -> last comment time when you waved the tags off
+    private let seenKey = "commentsSeenThrough"     // url -> last comment time when you last opened it
+
+    // MARK: - What you have dealt with
+
+    /// You opened the artifact from the widget. That settles a new share and catches you up on
+    /// comments. It does not settle a tag: looking at a question is not answering it.
+    func opened(_ item: ArtifactItem) {
+        acknowledgeShare(item.url)
+        var seen = (UserDefaults.standard.dictionary(forKey: seenKey) as? [String: Double]) ?? [:]
+        seen[item.url] = item.lastCommentAt?.timeIntervalSince1970 ?? 0
+        UserDefaults.standard.set(seen, forKey: seenKey)
+        reload()
+    }
+
+    /// You waved it off without opening. Clears a new share and any tags as they stand now;
+    /// a later comment in that artifact brings the tags back.
+    func dismiss(_ item: ArtifactItem) {
+        acknowledgeShare(item.url)
+        if (item.mentions ?? 0) > 0 {
+            var dismissed = (UserDefaults.standard.dictionary(forKey: dismissedKey) as? [String: Double]) ?? [:]
+            dismissed[item.url] = item.lastCommentAt?.timeIntervalSince1970 ?? Date().timeIntervalSince1970
+            UserDefaults.standard.set(dismissed, forKey: dismissedKey)
+        }
+        reload()
+    }
+
+    private func acknowledgeShare(_ url: String) {
+        var known = (UserDefaults.standard.dictionary(forKey: knownKey) as? [String: Double]) ?? [:]
+        guard let first = known[url], first > 0 else { return }
+        known[url] = 0  // known, and no longer new
+        UserDefaults.standard.set(known, forKey: knownKey)
+    }
+
+    private func reload() {
+        lastModified = nil
+        load()
+    }
+
+    /// Diagnostic: walks the share, tag and comment rules against the current snapshot and reports
+    /// counts at each step. Every preference it touches is put back before it returns.
+    func debugLifecycle() -> String {
+        let defaults = UserDefaults.standard
+        let keys = [knownKey, dismissedKey, seenKey]
+        let saved = keys.map { defaults.object(forKey: $0) }
+        defer {
+            for (key, value) in zip(keys, saved) {
+                if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
+            }
+            reload()
+        }
+        func counts() -> String {
+            "new shares \(items.filter { $0.newShareAt != nil }.count), tagged \(items.filter { ($0.mentions ?? 0) > 0 }.count), new comments \(items.filter { $0.hasNewComments }.count)"
+        }
+        reload()
+        var out = ["start: \(counts())"]
+
+        if let share = items.first(where: { $0.newShareAt != nil }) {
+            opened(share)
+            out.append("after opening a new share: \(counts())")
+        } else if let shared = items.first(where: { $0.owner == "shared" }) {
+            // No real new share right now: make one, then open it.
+            var known = (defaults.dictionary(forKey: knownKey) as? [String: Double]) ?? [:]
+            known[shared.url] = Date().timeIntervalSince1970
+            defaults.set(known, forKey: knownKey)
+            reload()
+            out.append("with a simulated new share: \(counts())")
+            if let share = items.first(where: { $0.url == shared.url }) { opened(share) }
+            out.append("after opening it: \(counts())")
+        }
+
+        if let tagged = items.first(where: { ($0.mentions ?? 0) > 0 }) {
+            opened(tagged)
+            out.append("after opening a tagged artifact (tag should stay): \(counts())")
+            dismiss(tagged)
+            out.append("after dismissing it: \(counts())")
+            var dismissed = (defaults.dictionary(forKey: dismissedKey) as? [String: Double]) ?? [:]
+            dismissed[tagged.url] = (dismissed[tagged.url] ?? 0) - 3_600
+            defaults.set(dismissed, forKey: dismissedKey)
+            reload()
+            out.append("after a later comment arrives (tag should return): \(counts())")
+        } else {
+            out.append("no tagged artifact in the snapshot, so the tag rules were not exercised")
+        }
+
+        if let commented = items.first(where: { $0.lastCommentAt != nil && $0.lastCommentBy != "You" }) {
+            var seen = (defaults.dictionary(forKey: seenKey) as? [String: Double]) ?? [:]
+            seen[commented.url] = (commented.lastCommentAt?.timeIntervalSince1970 ?? 0) - 3_600
+            defaults.set(seen, forKey: seenKey)
+            reload()
+            out.append("with a comment newer than your last look: \(counts())")
+            if let item = items.first(where: { $0.url == commented.url }) { opened(item) }
+            out.append("after opening it: \(counts())")
+        } else {
+            out.append("no artifact with someone else's comment, so the new-comment rule was not exercised")
+        }
+        return out.joined(separator: "\n")
+    }
 
     private struct Snapshot: Decodable {
         var updatedAt: Date?
@@ -111,16 +211,36 @@ final class ArtifactStore: ObservableObject {
         }
         defaults.set(known, forKey: knownKey)
 
-        // Tags waiting on you, then new shares, then your own recent work, then comment activity.
+        // Tags you waved off stay quiet until someone comments again. Comments by other people
+        // since you last opened the artifact are flagged as new; the first sighting is the baseline.
+        var dismissed = (defaults.dictionary(forKey: dismissedKey) as? [String: Double]) ?? [:]
+        var seen = (defaults.dictionary(forKey: seenKey) as? [String: Double]) ?? [:]
+        for i in artifacts.indices {
+            let url = artifacts[i].url
+            let last = artifacts[i].lastCommentAt?.timeIntervalSince1970 ?? 0
+            if let waved = dismissed[url] {
+                if last <= waved { artifacts[i].mentions = 0 } else { dismissed[url] = nil }
+            }
+            if let through = seen[url] {
+                artifacts[i].hasNewComments = last > through + 1 && artifacts[i].lastCommentBy != "You"
+            } else {
+                seen[url] = last
+            }
+        }
+        defaults.set(dismissed, forKey: dismissedKey)
+        defaults.set(seen, forKey: seenKey)
+
+        // Tags waiting on you, then new shares, then fresh comments, your own recent work, the rest.
         func rank(_ a: ArtifactItem) -> Int {
             if (a.mentions ?? 0) > 0 { return 0 }
             if a.newShareAt != nil { return 1 }
-            if a.isActive { return 2 }
-            return 3
+            if a.hasNewComments { return 2 }
+            if a.isActive { return 3 }
+            return 4
         }
         let sorted = artifacts.sorted { a, b in
             if rank(a) != rank(b) { return rank(a) < rank(b) }
-            if rank(a) == 2 { return (a.updated ?? "") > (b.updated ?? "") }
+            if rank(a) == 3 { return (a.updated ?? "") > (b.updated ?? "") }
             let ca = a.lastCommentAt ?? .distantPast, cb = b.lastCommentAt ?? .distantPast
             if ca != cb { return ca > cb }
             return (a.updated ?? "") > (b.updated ?? "")

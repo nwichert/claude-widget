@@ -205,7 +205,7 @@ struct PanelView: View {
                                 action: { open(row) }))
         }
         if settings.showGitHub {
-            for pr in github.pullRequests where pr.status.needsYou {
+            for pr in visiblePullRequests where pr.status.needsYou {
                 out.append(Headline(id: "pr-" + pr.url, icon: "arrow.triangle.pull", color: Palette.attention,
                                     label: "PR \(pr.status.label)", text: pr.title,
                                     action: { Self.openLink(pr.url) }))
@@ -278,9 +278,18 @@ struct PanelView: View {
         artifacts.items.filter { ($0.mentions ?? 0) == 0 && $0.newShareAt == nil }
     }
     private var urgentPullRequests: [PullRequest] {
-        settings.showGitHub ? github.pullRequests.filter { $0.status.needsYou } : []
+        settings.showGitHub ? visiblePullRequests.filter { $0.status.needsYou } : []
     }
-    private var otherPullRequests: [PullRequest] { github.pullRequests.filter { !$0.status.needsYou } }
+    private var otherPullRequests: [PullRequest] { visiblePullRequests.filter { !$0.status.needsYou } }
+
+    /// Every pull request except the ones you have ignored.
+    private var visiblePullRequests: [PullRequest] {
+        github.pullRequests.filter { settings.ignoredPullRequests[$0.url] == nil }
+    }
+
+    private func ignore(_ pr: PullRequest) {
+        settings.ignoredPullRequests[pr.url] = "\(pr.repo) #\(pr.number) · \(pr.title)"
+    }
 
     @ViewBuilder private var needsYouSection: some View {
         let sessions = urgentSessions
@@ -316,8 +325,12 @@ struct PanelView: View {
                                 open: { chats.openDuet(task) },
                                 complete: { chats.completeDuet(task) })
             }
-            ForEach(shared) { item in ArtifactRowView(item: item) }
-            ForEach(prs) { pr in PullRequestRowView(pr: pr) }
+            ForEach(shared) { item in
+                ArtifactRowView(item: item,
+                                open: { artifacts.opened(item); Self.openLink(item.url) },
+                                dismiss: { artifacts.dismiss(item) })
+            }
+            ForEach(prs) { pr in PullRequestRowView(pr: pr) { ignore(pr) } }
         }
         .padding(.horizontal, 6)
     }
@@ -438,7 +451,7 @@ struct PanelView: View {
 
     private func pullRequests(for row: SessionRow) -> [PullRequest] {
         guard let repo = row.git?.repo?.lowercased() else { return [] }
-        return github.pullRequests.filter { $0.repo.lowercased() == repo }
+        return visiblePullRequests.filter { $0.repo.lowercased() == repo }
     }
 
     /// A section title. With an `id` it is a disclosure: click to fold the section, remembered.
@@ -480,7 +493,7 @@ struct PanelView: View {
             sectionHeader("PULL REQUESTS", id: "prs", count: rest.count) { Spacer() }
             if !settings.isCollapsed("prs") {
                 ForEach(rest.prefix(8)) { pr in
-                    PullRequestRowView(pr: pr)
+                    PullRequestRowView(pr: pr) { ignore(pr) }
                 }
             }
         }
@@ -526,9 +539,10 @@ struct PanelView: View {
         // Tags and new shares are in "Needs you". Here: your recent work (capped at four so it
         // cannot crowd out other people's), then artifacts with comment activity.
         let rest = otherArtifacts
-        let active = Array(rest.filter { $0.isActive }.prefix(4))
-        let others = rest.filter { !$0.isActive && $0.isCollaboration }
-        let shown = Array((active + others).prefix(8))
+        let fresh = rest.filter { $0.hasNewComments }
+        let active = Array(rest.filter { $0.isActive && !$0.hasNewComments }.prefix(4))
+        let others = rest.filter { !$0.isActive && !$0.hasNewComments && $0.isCollaboration }
+        let shown = Array((fresh + active + others).prefix(max(8, fresh.count)))
         VStack(alignment: .leading, spacing: 1) {
             sectionHeader("ARTIFACTS", id: "artifacts", count: shown.count) {
                 Spacer()
@@ -541,7 +555,9 @@ struct PanelView: View {
             }
             if !settings.isCollapsed("artifacts") {
                 ForEach(shown) { item in
-                    ArtifactRowView(item: item)
+                    ArtifactRowView(item: item,
+                                    open: { artifacts.opened(item); Self.openLink(item.url) },
+                                    dismiss: nil)
                 }
             }
         }
@@ -1491,6 +1507,7 @@ private struct SkillIdeaRowView: View {
 
 private struct PullRequestRowView: View {
     let pr: PullRequest
+    let ignore: () -> Void
     @State private var hovering = false
 
     var body: some View {
@@ -1507,10 +1524,22 @@ private struct PullRequestRowView: View {
                         .foregroundStyle(pr.status.needsYou ? Palette.text : Palette.text2)
                         .lineLimit(1)
                     Spacer(minLength: 4)
-                    Text(pr.status.label)
-                        .font(.system(size: 10, weight: pr.status.needsYou ? .medium : .regular))
-                        .foregroundStyle(statusColor)
+                    if hovering {
+                        HStack(spacing: 4) {
+                            Image(systemName: "eye.slash").font(.system(size: 10))
+                            Text("Ignore").font(.system(size: 10, weight: .medium))
+                        }
+                        .foregroundStyle(Palette.text2)
                         .fixedSize()
+                        .contentShape(Rectangle())
+                        .onTapGesture(perform: ignore)
+                        .help("Stop showing this pull request. Bring it back from settings.")
+                    } else {
+                        Text(pr.status.label)
+                            .font(.system(size: 10, weight: pr.status.needsYou ? .medium : .regular))
+                            .foregroundStyle(statusColor)
+                            .fixedSize()
+                    }
                 }
                 Text("\(pr.repo) #\(pr.number)" + (pr.kind == .reviewRequested && !pr.author.isEmpty ? " · by \(pr.author)" : ""))
                     .font(.system(size: 10.5))
@@ -1544,6 +1573,9 @@ private struct PullRequestRowView: View {
 
 private struct ArtifactRowView: View {
     let item: ArtifactItem
+    let open: () -> Void
+    /// Present on rows in "Needs you": clears the row without opening the artifact.
+    let dismiss: (() -> Void)?
     @State private var hovering = false
 
     private var waiting: Int { item.mentions ?? 0 }
@@ -1563,10 +1595,22 @@ private struct ArtifactRowView: View {
                         .lineLimit(1)
                     Spacer(minLength: 4)
                     Text(trailing)
-                        .font(.system(size: 10, weight: waiting > 0 || item.newShareAt != nil ? .medium : .regular))
-                        .foregroundStyle(waiting > 0 || item.newShareAt != nil ? Palette.attention : Palette.text3)
+                        .font(.system(size: 10, weight: waiting > 0 || item.newShareAt != nil || item.hasNewComments ? .medium : .regular))
+                        .foregroundStyle(waiting > 0 || item.newShareAt != nil ? Palette.attention
+                                         : item.hasNewComments ? Palette.text2 : Palette.text3)
                         .monospacedDigit()
                         .fixedSize()
+                    if hovering, let dismiss {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8.5, weight: .bold))
+                            .foregroundStyle(Palette.text2)
+                            .frame(width: 16, height: 14)
+                            .contentShape(Rectangle())
+                            .onTapGesture(perform: dismiss)
+                            .help(waiting > 0
+                                  ? "Clear without opening. It comes back if someone comments again."
+                                  : "Clear without opening")
+                    }
                 }
                 if waiting > 0, let preview = item.mentionPreview {
                     Text("\(item.lastCommentBy.map { $0 + ": " } ?? "")\(preview)")
@@ -1584,15 +1628,17 @@ private struct ArtifactRowView: View {
         )
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .onTapGesture {
-            if let url = URL(string: item.url) { NSWorkspace.shared.open(url) }
-        }
+        .onTapGesture(perform: open)
         .help(tooltip)
     }
 
     private var trailing: String {
         if waiting > 0 { return waiting == 1 ? "1 tag for you" : "\(waiting) tags for you" }
         if item.newShareAt != nil { return "newly shared with you" }
+        if item.hasNewComments {
+            let who = item.lastCommentBy?.split(separator: " ").first.map(String.init)
+            return who.map { "new comment from \($0)" } ?? "new comment"
+        }
         if item.isActive, let days = item.daysSinceUpdate() {
             return days <= 0 ? "you edited today" : days == 1 ? "you edited yesterday" : "you edited \(days)d ago"
         }
@@ -1718,6 +1764,24 @@ private struct SettingsView: View {
                         .font(.system(size: 10.5))
                         .foregroundStyle(Palette.text3)
                         .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            if !settings.ignoredPullRequests.isEmpty {
+                section("Ignored pull requests") {
+                    ForEach(settings.ignoredPullRequests.sorted { $0.value < $1.value }, id: \.key) { url, label in
+                        HStack {
+                            Text(label)
+                                .font(.system(size: 12))
+                                .foregroundStyle(Palette.text2)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 8)
+                            link("Show") { settings.ignoredPullRequests[url] = nil }
+                        }
+                    }
+                    if settings.ignoredPullRequests.count > 1 {
+                        link("Show all") { settings.ignoredPullRequests = [:] }
+                    }
                 }
             }
             if !settings.hiddenChats.isEmpty {

@@ -38,6 +38,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
             return
         }
+        if let i = CommandLine.arguments.firstIndex(of: "--artifact-test"), CommandLine.arguments.count > i + 1 {
+            try? artifacts.debugLifecycle().write(toFile: CommandLine.arguments[i + 1], atomically: true, encoding: .utf8)
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+            return
+        }
         // Diagnostic: post one notification, to check delivery and the icon, then quit.
         if CommandLine.arguments.contains("--notify-test") {
             let content = UNMutableNotificationContent()
