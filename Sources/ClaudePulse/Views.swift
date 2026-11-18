@@ -86,11 +86,11 @@ struct PanelView: View {
             if layout.showSettings {
                 if manual {
                     // A long hidden-chats list must stay reachable at whatever height you chose.
-                    ScrollView(.vertical) { SettingsView(settings: settings, github: github) }
+                    ScrollView(.vertical) { SettingsView(settings: settings, github: github, connections: connections) }
                         .scrollIndicators(.never)
                         .frame(maxHeight: .infinity)
                 } else {
-                    SettingsView(settings: settings, github: github)
+                    SettingsView(settings: settings, github: github, connections: connections)
                 }
             } else if manual {
                 ScrollView(.vertical) { list(limit: nil) }
@@ -123,6 +123,62 @@ struct PanelView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(Palette.border, lineWidth: 1)
         )
+    }
+
+    /// One line per data source that is switched on: is it working, and how fresh is it?
+    private var connections: [ConnectionLine] {
+        var lines: [ConnectionLine] = []
+        let stale: (Date?, TimeInterval) -> Bool = { date, limit in
+            date.map { Date().timeIntervalSince($0) > limit } ?? true
+        }
+        func age(_ date: Date?) -> String { date.map { "last read \(Format.ago($0)) ago" } ?? "never read" }
+
+        if !store.claudeRunning {
+            lines.append(ConnectionLine(name: "Claude Desktop", state: .down, detail: "not running"))
+        } else if settings.showCode {
+            lines.append(ConnectionLine(name: "Code sessions", state: .ok, detail: "live, read every 2 seconds"))
+        }
+        if settings.showGitHub {
+            switch github.connection {
+            case .connected(let accounts):
+                lines.append(ConnectionLine(name: "GitHub", state: .ok, detail: "connected as \(accounts.joined(separator: ", "))"))
+            case .checking:
+                lines.append(ConnectionLine(name: "GitHub", state: .ok, detail: "checking"))
+            case .noCLI:
+                lines.append(ConnectionLine(name: "GitHub", state: .problem, detail: "the gh CLI is not installed"))
+            case .notLoggedIn:
+                lines.append(ConnectionLine(name: "GitHub", state: .problem, detail: "not logged in; run gh auth login"))
+            }
+        }
+        if settings.showChats || settings.showDuet {
+            if !chats.trusted {
+                lines.append(ConnectionLine(name: "Chats and Duet", state: .problem, detail: "Accessibility access is off"))
+            } else {
+                // Readable only while on screen, so an old reading is normal here, not a fault.
+                if settings.showDuet {
+                    lines.append(ConnectionLine(name: "Duet", state: .ok, detail: "connected; \(age(chats.duetSeenAt))"))
+                }
+                if settings.showChats {
+                    lines.append(ConnectionLine(name: "Chats", state: .ok, detail: "connected; \(age(chats.seenAt))"))
+                }
+            }
+        }
+        if settings.showArtifacts {
+            let old = stale(artifacts.updatedAt, 3 * 86_400)
+            lines.append(ConnectionLine(name: "Artifacts", state: old ? .problem : .ok,
+                                        detail: artifacts.updatedAt == nil ? "no snapshot yet" : "snapshot \(Format.ago(artifacts.updatedAt!)) old"))
+        }
+        if settings.showUsage || settings.showSkillIdeas {
+            let at = insights.insights?.updatedAt
+            lines.append(ConnectionLine(name: "Usage and skill ideas", state: stale(at, 4 * 86_400) ? .problem : .ok,
+                                        detail: at == nil ? "no snapshot yet" : "snapshot \(Format.ago(at!)) old"))
+        }
+        if settings.notifyOnFinish {
+            let blocked = ["denied", "notDetermined", "bannersOff"].contains(settings.notificationAccess)
+            lines.append(ConnectionLine(name: "Notifications", state: blocked ? .problem : .ok,
+                                        detail: blocked ? "blocked by macOS" : "allowed"))
+        }
+        return lines
     }
 
     /// What the ticker cycles through: sessions and PRs waiting on you, what is still running, then usage.
@@ -502,13 +558,22 @@ struct PanelView: View {
                 .font(.system(size: 10, weight: .semibold))
                 .kerning(1.2)
                 .foregroundStyle(Palette.text2)
-            Spacer()
-            if asking > 0 { Tally(count: asking, label: asking == 1 ? "needs answer" : "need answers", color: Palette.attention) }
-            if waiting > 0 { Tally(count: waiting, label: "done", color: Palette.done) }
-            if working > 0 { Tally(count: working, label: "working", color: Palette.working) }
-            if waiting == 0 && working == 0 && asking == 0 {
-                Text("all quiet").font(.system(size: 10.5)).foregroundStyle(Palette.text3)
+            // Counts with their words where there is room, bare counts where there is not.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    if asking > 0 { Tally(count: asking, label: asking == 1 ? "needs answer" : "need answers", color: Palette.attention) }
+                    if waiting > 0 { Tally(count: waiting, label: "done", color: Palette.done) }
+                    if working > 0 { Tally(count: working, label: "working", color: Palette.working) }
+                }
+                HStack(spacing: 8) {
+                    if asking > 0 { Tally(count: asking, label: "", color: Palette.attention) }
+                    if waiting > 0 { Tally(count: waiting, label: "", color: Palette.done) }
+                    if working > 0 { Tally(count: working, label: "", color: Palette.working) }
+                }
             }
+            .help("\(asking) waiting on your answer · \(waiting) done · \(working) working")
+            Spacer(minLength: 4)
+            LiveBadge(store: store, connections: connections) { layout.showSettings = true }
             Menu {
                 Button("New Code session") { Self.openLink("claude://code/new") }
                 Button("New chat") { Self.openLink("claude://claude.ai/new?surface=chat") }
@@ -573,6 +638,54 @@ struct PanelView: View {
             Color.clear.frame(height: 8)
         }
     }
+}
+
+struct ConnectionLine: Identifiable {
+    enum State { case ok, problem, down }
+    let name: String
+    let state: State
+    let detail: String
+    var id: String { name }
+}
+
+/// The header's status light. "Live" means Claude Desktop is running, the session reader is
+/// keeping up, and every data source you have switched on is working.
+private struct LiveBadge: View {
+    let store: SessionStore
+    let connections: [ConnectionLine]
+    let openSettings: () -> Void
+
+    static let warning = Color(red: 0.788, green: 0.522, blue: 0.000)  // #C98500
+
+    var body: some View {
+        // The reader's heartbeat is polled here, so a stalled reader shows up within seconds.
+        TimelineView(.periodic(from: .now, by: 3)) { context in
+            let stalled = context.date.timeIntervalSince(store.lastReadAt) > 12
+            let down = connections.contains { $0.state == .down }
+            let problems = connections.filter { $0.state == .problem }
+            let (label, color): (String, Color) =
+                down ? ("Offline", Palette.text3)
+                : stalled ? ("Paused", Palette.text3)
+                : !problems.isEmpty ? ("Limited", Self.warning)
+                : ("Live", Palette.done)
+            HStack(spacing: 5) {
+                Circle().fill(color).frame(width: 6, height: 6)
+                Text(label)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(Palette.text2)
+                    .fixedSize()
+            }
+            .contentShape(Rectangle())
+            .onTapGesture(perform: openSettings)
+            .help((stalled && !down ? ["The session reader has stopped updating."] : [])
+                  .appending(contentsOf: connections.map { "\($0.state == .ok ? "✓" : "!") \($0.name): \($0.detail)" })
+                  .joined(separator: "\n"))
+        }
+    }
+}
+
+private extension Array {
+    func appending(contentsOf other: [Element]) -> [Element] { self + other }
 }
 
 struct Headline: Identifiable {
@@ -659,8 +772,10 @@ private struct Tally: View {
     var body: some View {
         HStack(spacing: 5) {
             Circle().fill(color).frame(width: 6, height: 6)
-            Text("\(count) \(label)")
+            Text(label.isEmpty ? "\(count)" : "\(count) \(label)")
                 .font(.system(size: 10.5, weight: .medium))
+                .lineLimit(1)
+                .fixedSize()
                 .foregroundStyle(Palette.text2)
                 .monospacedDigit()
         }
@@ -1299,27 +1414,29 @@ private struct ChatRowView: View {
 private struct SettingsView: View {
     @ObservedObject var settings: Settings
     @ObservedObject var github: GitHubReader
-
-    private var githubStatus: String {
-        switch github.connection {
-        case .checking: return "Checking the GitHub CLI…"
-        case .noCLI: return "Not connected. Install the GitHub CLI (gh), then run: gh auth login"
-        case .notLoggedIn: return "Not connected. Run in a terminal: gh auth login"
-        case .connected(let accounts): return "Connected through the gh CLI as \(accounts.joined(separator: ", "))"
-        }
-    }
+    var connections: [ConnectionLine] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            section("Connections") {
+                ForEach(connections) { line in
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Circle()
+                            .fill(line.state == .ok ? Palette.done : line.state == .down ? Palette.text3 : LiveBadge.warning)
+                            .frame(width: 6, height: 6)
+                        Text(line.name).font(.system(size: 12)).foregroundStyle(Palette.text)
+                        Spacer(minLength: 8)
+                        Text(line.detail)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(line.state == .ok ? Palette.text3 : Palette.text2)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+            }
             section("Sections") {
                 toggle("Code", $settings.showCode)
                 toggle("Pull requests", $settings.showGitHub)
-                if settings.showGitHub {
-                    Text(githubStatus)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(Palette.text3)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
                 toggle("Duet tasks", $settings.showDuet)
                 toggle("Artifacts", $settings.showArtifacts)
                 toggle("Chats", $settings.showChats)

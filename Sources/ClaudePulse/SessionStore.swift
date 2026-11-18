@@ -15,6 +15,12 @@ final class SessionStore: ObservableObject {
     @Published private(set) var rows: [SessionRow] = []
     @Published private(set) var plan: PlanUsage?
 
+    /// Whether Claude Desktop is running at all.
+    @Published private(set) var claudeRunning = true
+    /// When the reader last completed a pass. Not published: it changes every two seconds, and the
+    /// header polls it instead so the whole panel is not redrawn each time.
+    private(set) var lastReadAt = Date()
+
     /// Called on the main queue when a session stops working while you were not looking at it.
     var onFinished: ((SessionRow) -> Void)?
 
@@ -407,7 +413,10 @@ final class SessionStore: ObservableObject {
         primed = true
 
         let plan = readPlan()
+        let running = !NSRunningApplication.runningApplications(withBundleIdentifier: claudeBundleID).isEmpty
         DispatchQueue.main.async {
+            self.lastReadAt = Date()
+            if self.claudeRunning != running { self.claudeRunning = running }
             if self.rows != built {
                 self.rows = built
                 // A plain record of what the panel is showing, for checking detection from outside.
