@@ -124,6 +124,8 @@ final class SessionStore: ObservableObject {
         /// Claude's own after-turn verdict: "completed", "blocked", ...
         var summaryCategory: String?
         var needsAction: String?
+        /// Set when a scheduled task started this session rather than you.
+        var scheduled = false
     }
 
     private static func date(_ value: Any?) -> Date? {
@@ -191,6 +193,7 @@ final class SessionStore: ObservableObject {
                         let number = (p["prNumber"] as? String) ?? (p["prNumber"] as? NSNumber)?.stringValue ?? ""
                         return PRInfo(number: number, state: (p["state"] as? String) ?? "", url: url)
                     })
+                record?.scheduled = (d["scheduledTaskId"] as? String)?.isEmpty == false
                 // Claude Desktop's after-turn verdict. Only trust it if it is about the latest message.
                 if let summary = d["postTurnSummary"] as? [String: Any] {
                     let about = (d["postTurnSummaryFor"] as? String) ?? (summary["summarizes_uuid"] as? String)
@@ -263,6 +266,10 @@ final class SessionStore: ObservableObject {
             if let l { claimed.insert(l.sessionId) }
             let activity = [d.lastActivity, d.lastTurnEdge, l?.updated].compactMap { $0 }.max() ?? .distantPast
             guard l != nil || now.timeIntervalSince(activity) < recentWindow else { continue }
+
+            // A scheduled task's run is background plumbing: list it only while it is actually running
+            // or stuck, never as a finished session waiting for you.
+            if d.scheduled, l?.status != "busy", l?.status != "waiting", l?.waitingFor == nil { continue }
 
             let cwd = l?.cwd.nonEmpty ?? d.cwd ?? ""
             let cli = l?.sessionId ?? d.cliSessionId

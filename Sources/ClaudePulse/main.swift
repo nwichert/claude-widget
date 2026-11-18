@@ -93,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         store.start()
         chats.start()
         artifacts.onNewMentions = { [weak self] item in self?.notifyMention(item) }
+        artifacts.onNewShare = { [weak self] item in self?.notifyShare(item) }
         artifacts.start()
         github.start()
         insights.start()
@@ -251,6 +252,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // One notification per session: a newer one replaces the older.
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: row.id, content: content, trigger: nil))
+    }
+
+    private func notifyShare(_ item: ArtifactItem) {
+        guard canNotify, notifyEnabled else { return }
+        let content = UNMutableNotificationContent()
+        content.title = item.title
+        content.body = "An artifact was shared with you"
+        content.sound = .default
+        content.userInfo = ["url": item.url]
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: "share-" + item.url, content: content, trigger: nil))
     }
 
     private func notifyMention(_ item: ArtifactItem) {

@@ -294,9 +294,13 @@ struct PanelView: View {
     }
 
     @ViewBuilder private var artifactSection: some View {
-        let waiting = artifacts.items.filter { ($0.mentions ?? 0) > 0 }
-        // Everything waiting on you, then the most recent collaborations, six rows at most.
-        let shown = Array((waiting + artifacts.items.filter { ($0.mentions ?? 0) == 0 && $0.isCollaboration }).prefix(6))
+        // Already ordered by the store: tags for you, new shares, your recent work, then comment activity.
+        // Your own recent work is capped at four so it cannot crowd out what other people are doing.
+        let urgent = artifacts.items.filter { ($0.mentions ?? 0) > 0 || $0.newShareAt != nil }
+        let rest = artifacts.items.filter { ($0.mentions ?? 0) == 0 && $0.newShareAt == nil }
+        let active = Array(rest.filter { $0.isActive }.prefix(4))
+        let others = rest.filter { !$0.isActive && $0.isCollaboration }
+        let shown = Array((urgent + active + others).prefix(max(8, urgent.count)))
         VStack(alignment: .leading, spacing: 1) {
             sectionHeader("ARTIFACTS") {
                 Spacer()
@@ -1033,21 +1037,21 @@ private struct ArtifactRowView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: item.owner == "shared" ? "person.2" : "doc.richtext")
+            Image(systemName: item.newShareAt != nil ? "person.badge.plus" : item.owner == "shared" ? "person.2" : "doc.richtext")
                 .font(.system(size: 9.5))
-                .foregroundStyle(waiting > 0 ? Palette.attention : Palette.text3)
+                .foregroundStyle(waiting > 0 || item.newShareAt != nil ? Palette.attention : Palette.text3)
                 .frame(width: 12)
                 .padding(.top, 3)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(item.title)
-                        .font(.system(size: 12, weight: waiting > 0 ? .semibold : .regular))
-                        .foregroundStyle(waiting > 0 ? Palette.text : Palette.text2)
+                        .font(.system(size: 12, weight: waiting > 0 || item.newShareAt != nil ? .semibold : .regular))
+                        .foregroundStyle(waiting > 0 || item.newShareAt != nil || item.isActive ? Palette.text : Palette.text2)
                         .lineLimit(1)
                     Spacer(minLength: 4)
                     Text(trailing)
-                        .font(.system(size: 10, weight: waiting > 0 ? .medium : .regular))
-                        .foregroundStyle(waiting > 0 ? Palette.attention : Palette.text3)
+                        .font(.system(size: 10, weight: waiting > 0 || item.newShareAt != nil ? .medium : .regular))
+                        .foregroundStyle(waiting > 0 || item.newShareAt != nil ? Palette.attention : Palette.text3)
                         .monospacedDigit()
                         .fixedSize()
                 }
@@ -1075,6 +1079,10 @@ private struct ArtifactRowView: View {
 
     private var trailing: String {
         if waiting > 0 { return waiting == 1 ? "1 tag for you" : "\(waiting) tags for you" }
+        if item.newShareAt != nil { return "newly shared with you" }
+        if item.isActive, let days = item.daysSinceUpdate() {
+            return days <= 0 ? "you edited today" : days == 1 ? "you edited yesterday" : "you edited \(days)d ago"
+        }
         if let threads = item.threads, threads > 0 { return threads == 1 ? "1 comment thread" : "\(threads) comment threads" }
         return item.owner == "shared" ? "shared with you" : ""
     }

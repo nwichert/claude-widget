@@ -15,8 +15,29 @@ struct ArtifactItem: Identifiable, Equatable, Decodable {
     var lastCommentBy: String?
     var mentionPreview: String?
 
+    /// Set by the store, not the file: when this shared artifact first appeared, if that was recent.
+    var newShareAt: Date?
+
+    private enum CodingKeys: String, CodingKey {
+        case title, url, owner, updated, threads, openThreads, mentions, lastCommentAt, lastCommentBy, mentionPreview
+    }
+
     var id: String { url }
     var isCollaboration: Bool { owner == "shared" || (threads ?? 0) > 0 }
+
+    /// Days since you last changed one of your own artifacts; nil for shared ones or unknown dates.
+    func daysSinceUpdate(now: Date = Date()) -> Int? {
+        guard owner == "mine", let updated else { return nil }
+        let parser = DateFormatter()
+        parser.dateFormat = "yyyy-MM-dd"
+        parser.timeZone = .current
+        guard let date = parser.date(from: updated) else { return nil }
+        return Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: date),
+                                               to: Calendar.current.startOfDay(for: now)).day
+    }
+
+    /// One of yours that you have worked on in the last couple of days.
+    var isActive: Bool { (daysSinceUpdate() ?? 99) <= 2 }
 }
 
 /// Artifacts and their comment activity.
@@ -31,6 +52,13 @@ final class ArtifactStore: ObservableObject {
 
     /// Called when the number of threads waiting on you goes up between snapshots.
     var onNewMentions: ((ArtifactItem) -> Void)?
+
+    /// Called when an artifact someone shared with you shows up for the first time.
+    var onNewShare: ((ArtifactItem) -> Void)?
+
+    /// How long a newly shared artifact keeps its "new" label.
+    private let newShareWindow: TimeInterval = 3 * 86_400
+    private let knownKey = "knownSharedArtifacts"   // url -> first seen (seconds since 1970)
 
     private struct Snapshot: Decodable {
         var updatedAt: Date?
@@ -62,10 +90,37 @@ final class ArtifactStore: ObservableObject {
         guard let snapshot = try? decoder.decode(Snapshot.self, from: data) else { return }
 
         let before = Dictionary(items.map { ($0.url, $0.mentions ?? 0) }, uniquingKeysWith: { a, _ in a })
-        // Waiting on you first, then live collaborations by latest comment, then everything else.
-        let sorted = snapshot.artifacts.sorted { a, b in
-            let ma = a.mentions ?? 0, mb = b.mentions ?? 0
-            if (ma > 0) != (mb > 0) { return ma > 0 }
+
+        // Remember every shared artifact the first time it is seen. The very first snapshot only
+        // seeds that record: everything in it was shared before the widget existed, so none is "new".
+        let defaults = UserDefaults.standard
+        let hadRecord = defaults.object(forKey: knownKey) != nil
+        var known = (defaults.dictionary(forKey: knownKey) as? [String: Double]) ?? [:]
+        let now = Date()
+        var arrivals: [ArtifactItem] = []
+        var artifacts = snapshot.artifacts
+        for i in artifacts.indices where artifacts[i].owner == "shared" {
+            let url = artifacts[i].url
+            if known[url] == nil {
+                known[url] = hadRecord ? now.timeIntervalSince1970 : 0
+                if hadRecord { arrivals.append(artifacts[i]) }
+            }
+            if let first = known[url], first > 0, now.timeIntervalSince1970 - first < newShareWindow {
+                artifacts[i].newShareAt = Date(timeIntervalSince1970: first)
+            }
+        }
+        defaults.set(known, forKey: knownKey)
+
+        // Tags waiting on you, then new shares, then your own recent work, then comment activity.
+        func rank(_ a: ArtifactItem) -> Int {
+            if (a.mentions ?? 0) > 0 { return 0 }
+            if a.newShareAt != nil { return 1 }
+            if a.isActive { return 2 }
+            return 3
+        }
+        let sorted = artifacts.sorted { a, b in
+            if rank(a) != rank(b) { return rank(a) < rank(b) }
+            if rank(a) == 2 { return (a.updated ?? "") > (b.updated ?? "") }
             let ca = a.lastCommentAt ?? .distantPast, cb = b.lastCommentAt ?? .distantPast
             if ca != cb { return ca > cb }
             return (a.updated ?? "") > (b.updated ?? "")
@@ -75,6 +130,7 @@ final class ArtifactStore: ObservableObject {
                 onNewMentions?(item)
             }
         }
+        arrivals.forEach { onNewShare?($0) }
         loadedOnce = true
         items = sorted
         updatedAt = snapshot.updatedAt
