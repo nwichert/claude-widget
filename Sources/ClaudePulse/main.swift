@@ -30,6 +30,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Diagnostic: click the first remembered Duet task the way a row click does, then quit.
+        if CommandLine.arguments.contains("--open-duet-first") {
+            let path = CommandLine.arguments.last ?? "/dev/null"
+            var lines = ["tasks remembered: \(chats.duetTasks.count)"]
+            let write = { try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8) }
+            _ = write()
+            if let task = chats.duetTasks.first {
+                chats.openDuet(task) { line in lines.append(line); _ = write() }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 14) { NSApp.terminate(nil) }
+            return
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--ax-follow"), CommandLine.arguments.count > i + 2 {
             let path = CommandLine.arguments[i + 1]
             let seconds = Int(CommandLine.arguments[i + 2]) ?? 120
@@ -272,9 +284,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         content.title = task.title
         content.body = "Duet needs your input" + (task.summary.map { ": \($0)" } ?? "")
         content.sound = .default
-        // Open the task inside the Claude app rather than the browser.
-        let web = task.url ?? "https://claude.ai/messages"
-        content.userInfo = ["url": web.replacingOccurrences(of: "https://", with: "claude://")]
+        content.userInfo = ["duetTask": task.title]
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: "duet-" + task.title, content: content, trigger: nil))
     }
@@ -310,7 +320,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        if let s = response.notification.request.content.userInfo["url"] as? String, let url = URL(string: s) {
+        let info = response.notification.request.content.userInfo
+        if let title = info["duetTask"] as? String, let task = chats.duetTasks.first(where: { $0.title == title }) {
+            chats.openDuet(task)
+        } else if let s = info["url"] as? String, let url = URL(string: s) {
             NSWorkspace.shared.open(url)
         }
         completionHandler()

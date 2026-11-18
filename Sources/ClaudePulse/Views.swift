@@ -138,7 +138,7 @@ struct PanelView: View {
             for task in chats.duetTasks where task.needsInput {
                 out.append(Headline(id: "duet-" + task.id, icon: "questionmark.bubble.fill", color: Palette.attention,
                                     label: "Duet", text: task.title,
-                                    action: { DuetTaskRowView.open(task) }))
+                                    action: { chats.openDuet(task) }))
             }
         }
         for row in store.rows where row.state == .needsYou {
@@ -344,7 +344,7 @@ struct PanelView: View {
                 hint("No active Duet tasks", action: nil)
             } else {
                 ForEach(chats.duetTasks.prefix(8)) { task in
-                    DuetTaskRowView(task: task)
+                    DuetTaskRowView(task: task) { chats.openDuet(task) }
                 }
             }
         }
@@ -970,17 +970,11 @@ private struct PulseHalo: NSViewRepresentable {
 
 struct DuetTaskRowView: View {
     let task: DuetTask
+    let open: () -> Void
     @State private var hovering = false
 
     private var color: Color {
         task.needsInput ? Palette.attention : task.readyForReview ? Palette.done : Palette.text3
-    }
-
-    /// Opens the task inside the Claude app where a link is known, otherwise Duet itself.
-    static func open(_ task: DuetTask) {
-        let web = task.url ?? "https://claude.ai/messages"
-        let inApp = web.replacingOccurrences(of: "https://", with: "claude://")
-        if let url = URL(string: inApp) ?? URL(string: web) { NSWorkspace.shared.open(url) }
     }
 
     var body: some View {
@@ -1020,7 +1014,7 @@ struct DuetTaskRowView: View {
         )
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .onTapGesture { Self.open(task) }
+        .onTapGesture(perform: open)
         .help([task.title, task.status, task.summary ?? ""].filter { !$0.isEmpty }.joined(separator: "\n"))
     }
 }

@@ -228,6 +228,63 @@ final class ChatReader: ObservableObject {
         }
     }
 
+    /// Brings Claude forward, opens Duet if it is not already showing, and clicks the task there.
+    ///
+    /// There is no link that does this: the app's `claude://` handler does not route to Duet
+    /// (`claude://claude.ai/messages` is ignored). So this presses what a person would press:
+    /// the sidebar's Claude tab, its "Claude Duet" button, then the task in Duet's Tasks pane.
+    func openDuet(_ task: DuetTask, trace: ((String) -> Void)? = nil) {
+        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: claudeBundleID).first {
+            app.activate()
+        }
+        queue.async { [weak self] in
+            guard let self, let root = self.claudeRoot() else { trace?("no Claude window"); return }
+            let alreadyOpen = self.duetPage(root) != nil
+            trace?("duet already open: \(alreadyOpen)")
+            if !alreadyOpen {
+                if let scan = self.scanSidebar(root), !scan.chatTab, let tab = scan.chatTabButton {
+                    AXUIElementPerformAction(tab, kAXPressAction as CFString)
+                    trace?("pressed the Claude tab")
+                    Thread.sleep(forTimeInterval: 0.6)
+                }
+                var pressed = false
+                for _ in 0..<12 where !pressed {
+                    var budget = 600
+                    if let sidebar = self.findSidebar(root, depth: 0, budget: &budget),
+                       let button = self.find(in: sidebar, budget: 500, where: { e in
+                           self.attr(e, kAXRoleAttribute) as? String == "AXButton" && self.label(e).hasPrefix("Claude Duet")
+                       }) {
+                        pressed = AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+                    } else {
+                        Thread.sleep(forTimeInterval: 0.3)
+                    }
+                }
+                trace?("pressed the Claude Duet button: \(pressed)")
+            }
+            // Wait for the page and its Tasks pane to load, then press the matching task.
+            for attempt in 0..<30 {
+                let page = self.duetPage(root)
+                let pane = page.flatMap { self.find(in: $0, budget: 1_500, where: { e in
+                    self.attr(e, kAXSubroleAttribute) as? String == "AXLandmarkRegion" && self.label(e) == "Tasks"
+                }) }
+                let link = pane.flatMap { self.find(in: $0, budget: 1_200, where: { e in
+                    self.attr(e, kAXRoleAttribute) as? String == "AXLink"
+                        && self.staticTexts(in: e, depth: 0).first == task.title
+                }) }
+                if attempt % 5 == 0 || link != nil {
+                    trace?("try \(attempt): page \(page != nil) pane \(pane != nil) link \(link != nil)")
+                }
+                if let link {
+                    let result = AXUIElementPerformAction(link, kAXPressAction as CFString)
+                    trace?("pressed: \(result.rawValue)")
+                    return
+                }
+                Thread.sleep(forTimeInterval: 0.35)
+            }
+            trace?("gave up")
+        }
+    }
+
     private func duetPage(_ root: AXUIElement) -> AXUIElement? {
         for window in (attr(root, kAXWindowsAttribute) as? [AXUIElement]) ?? [] {
             if let page = find(in: window, budget: 60, maxDepth: 12, where: { e in
