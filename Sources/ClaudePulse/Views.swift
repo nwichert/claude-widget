@@ -195,6 +195,12 @@ struct PanelView: View {
         let top = Array(data.projects.prefix(5))
         let ideas = (data.skillIdeas ?? []).filter { !settings.dismissedIdeas.contains($0.name) }
         VStack(alignment: .leading, spacing: 1) {
+            if !ideas.isEmpty {
+                sectionHeader("SKILLS WORTH CREATING") { Spacer() }
+                ForEach(ideas) { idea in
+                    SkillIdeaRowView(idea: idea) { settings.dismissedIdeas.append(idea.name) }
+                }
+            }
             sectionHeader("YOUR USAGE · LAST \(data.windowDays) DAYS") {
                 Spacer()
                 if let at = data.updatedAt {
@@ -252,12 +258,6 @@ struct PanelView: View {
             .padding(.horizontal, 10)
             .padding(.bottom, 4)
 
-            if !ideas.isEmpty {
-                sectionHeader("SKILLS WORTH CREATING") { Spacer() }
-                ForEach(ideas) { idea in
-                    SkillIdeaRowView(idea: idea) { settings.dismissedIdeas.append(idea.name) }
-                }
-            }
         }
         .padding(.horizontal, 6)
     }
@@ -326,6 +326,13 @@ struct PanelView: View {
         let needs = chats.duetTasks.filter { $0.needsInput }.count
         VStack(alignment: .leading, spacing: 1) {
             sectionHeader("DUET TASKS") {
+                // The header is a way into Duet whether or not there are tasks.
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 8, weight: .semibold))
+                    .frame(width: 14, height: 12)
+                    .contentShape(Rectangle())
+                    .onTapGesture { chats.openDuet(nil) }
+                    .help("Open Claude Duet")
                 if needs > 0 {
                     Text(needs == 1 ? "· 1 needs input" : "· \(needs) need input")
                         .font(.system(size: 10, weight: .medium))
@@ -341,7 +348,7 @@ struct PanelView: View {
                 }
             }
             if chats.duetTasks.isEmpty {
-                hint("No active Duet tasks", action: nil)
+                DuetEmptyRowView { chats.openDuet(nil) }
             } else {
                 ForEach(chats.duetTasks.prefix(8)) { task in
                     DuetTaskRowView(task: task) { chats.openDuet(task) }
@@ -966,6 +973,37 @@ private struct PulseHalo: NSViewRepresentable {
 
     func makeNSView(context: Context) -> HaloView { HaloView() }
     func updateNSView(_ nsView: HaloView, context: Context) {}
+}
+
+/// Shown when Duet has nothing active; still a way into Duet.
+private struct DuetEmptyRowView: View {
+    let open: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("No active Duet tasks")
+                .font(.system(size: 11))
+                .foregroundStyle(hovering ? Palette.text2 : Palette.text3)
+            Spacer(minLength: 4)
+            Text("Open Duet")
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(hovering ? Palette.text : Palette.text2)
+            Image(systemName: "arrow.up.right")
+                .font(.system(size: 8.5, weight: .semibold))
+                .foregroundStyle(Palette.text2)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(hovering ? Palette.raised : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .onTapGesture(perform: open)
+        .help("Open Claude Duet in the Claude app")
+    }
 }
 
 struct DuetTaskRowView: View {

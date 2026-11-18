@@ -161,6 +161,7 @@ final class ChatReader: ObservableObject {
 
         var group = ""
         var activeTab = true
+        var sawTabs = false
         var tasks: [DuetTask] = []
         var visited = 0
         func walk(_ e: AXUIElement, _ depth: Int) {
@@ -170,6 +171,7 @@ final class ChatReader: ObservableObject {
             switch role {
             case "AXRadioButton":
                 // Tabs: Active, Up next, Scheduled, Resolved. Only the Active list is kept.
+                sawTabs = true
                 if (attr(e, kAXValueAttribute) as? NSNumber)?.intValue == 1 {
                     activeTab = label(e) == "Active" || staticTexts(in: e, depth: 0).first == "Active"
                 }
@@ -194,7 +196,9 @@ final class ChatReader: ObservableObject {
             for child in children(e) { walk(child, depth + 1) }
         }
         walk(pane, 0)
-        guard activeTab else { return }
+        // With a task's detail open, the pane shows that task instead of the list and has no tabs.
+        // That is not an empty list, so leave the remembered tasks alone.
+        guard sawTabs, activeTab else { return }
 
         tasks.sort { ($0.needsInput ? 0 : $0.readyForReview ? 1 : 2) < ($1.needsInput ? 0 : $1.readyForReview ? 1 : 2) }
 
@@ -233,7 +237,8 @@ final class ChatReader: ObservableObject {
     /// There is no link that does this: the app's `claude://` handler does not route to Duet
     /// (`claude://claude.ai/messages` is ignored). So this presses what a person would press:
     /// the sidebar's Claude tab, its "Claude Duet" button, then the task in Duet's Tasks pane.
-    func openDuet(_ task: DuetTask, trace: ((String) -> Void)? = nil) {
+    /// Pass nil to just open Duet.
+    func openDuet(_ task: DuetTask?, trace: ((String) -> Void)? = nil) {
         if let app = NSRunningApplication.runningApplications(withBundleIdentifier: claudeBundleID).first {
             app.activate()
         }
@@ -262,6 +267,7 @@ final class ChatReader: ObservableObject {
                 trace?("pressed the Claude Duet button: \(pressed)")
             }
             // Wait for the page and its Tasks pane to load, then press the matching task.
+            guard let task else { return }
             for attempt in 0..<30 {
                 let page = self.duetPage(root)
                 let pane = page.flatMap { self.find(in: $0, budget: 1_500, where: { e in

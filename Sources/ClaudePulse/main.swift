@@ -36,9 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             var lines = ["tasks remembered: \(chats.duetTasks.count)"]
             let write = { try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8) }
             _ = write()
-            if let task = chats.duetTasks.first {
-                chats.openDuet(task) { line in lines.append(line); _ = write() }
-            }
+            chats.openDuet(chats.duetTasks.first) { line in lines.append(line); _ = write() }
             DispatchQueue.main.asyncAfter(deadline: .now() + 14) { NSApp.terminate(nil) }
             return
         }
