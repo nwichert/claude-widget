@@ -1510,9 +1510,25 @@ private struct SettingsView: View {
                        [(6, "6h"), (24, "1d"), (72, "3d"), (168, "7d")])
             }
             section("Notifications") {
-                toggle("When a session finishes", $settings.notifyOnFinish)
-                choice("Remind if still waiting", $settings.remindMinutes,
-                       [(0, "Off"), (5, "5m"), (15, "15m"), (30, "30m")])
+                toggle("Notifications", $settings.notifyOnFinish)
+                if settings.notifyOnFinish {
+                    // What to be told about. These sit under the master switch above.
+                    Group {
+                        toggle("Sessions done or waiting on you", $settings.notifySessions)
+                        if settings.notifySessions {
+                            choice("Remind if still waiting", $settings.remindMinutes,
+                                   [(0, "Off"), (5, "5m"), (15, "15m"), (30, "30m")])
+                        }
+                        toggle("Artifact tags and new shares", $settings.notifyArtifacts)
+                        toggle("Duet tasks needing input", $settings.notifyDuet)
+                    }
+                    .padding(.leading, 12)
+                } else {
+                    Text("Claude Pulse will not send any notifications. The panel still shows everything.")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Palette.text3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             if !settings.hiddenChats.isEmpty {
                 section("Hidden chats") {

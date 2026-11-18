@@ -194,7 +194,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                      action: #selector(resetPanelSize), keyEquivalent: "").target = self
         menu.addItem(.separator())
 
-        let notifyItem = menu.addItem(withTitle: "Notify when a session finishes",
+        let notifyItem = menu.addItem(withTitle: "Notifications",
                                       action: #selector(toggleNotify), keyEquivalent: "")
         notifyItem.target = self
         notifyItem.state = notifyEnabled ? .on : .off
@@ -280,7 +280,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func notify(_ row: SessionRow, reminder: Bool = false) {
-        guard canNotify, reminder ? remindEnabled : notifyEnabled else { return }
+        guard canNotify, notifyEnabled, Settings.shared.notifySessions, !reminder || remindEnabled else { return }
         let content = UNMutableNotificationContent()
         content.title = row.title
         let asking = row.state == .needsInput
@@ -299,7 +299,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func notifyDuet(_ task: DuetTask) {
-        guard canNotify, notifyEnabled, Settings.shared.showDuet else { return }
+        guard canNotify, notifyEnabled, Settings.shared.notifyDuet, Settings.shared.showDuet else { return }
         let content = UNMutableNotificationContent()
         content.title = task.title
         content.body = "Duet needs your input" + (task.summary.map { ": \($0)" } ?? "")
@@ -310,7 +310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func notifyShare(_ item: ArtifactItem) {
-        guard canNotify, notifyEnabled else { return }
+        guard canNotify, notifyEnabled, Settings.shared.notifyArtifacts else { return }
         let content = UNMutableNotificationContent()
         content.title = item.title
         content.body = "An artifact was shared with you"
@@ -321,7 +321,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func notifyMention(_ item: ArtifactItem) {
-        guard canNotify, notifyEnabled else { return }
+        guard canNotify, notifyEnabled, Settings.shared.notifyArtifacts else { return }
         let content = UNMutableNotificationContent()
         content.title = item.title
         content.body = "\(item.lastCommentBy ?? "Someone") tagged you" + (item.mentionPreview.map { ": \($0)" } ?? "")
