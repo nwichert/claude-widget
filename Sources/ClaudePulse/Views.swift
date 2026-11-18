@@ -554,7 +554,7 @@ struct PanelView: View {
     }
 
     @ViewBuilder private var footer: some View {
-        if settings.showPlan, !layout.showSettings, let plan = store.plan {
+        if settings.showUsage, !layout.showSettings, let plan = store.plan {
             TimelineView(.periodic(from: .now, by: 60)) { context in
                 HStack(spacing: 12) {
                     Meter(label: "5h", percent: plan.fiveHour)
@@ -1324,8 +1324,7 @@ private struct SettingsView: View {
                 toggle("Artifacts", $settings.showArtifacts)
                 toggle("Chats", $settings.showChats)
                 toggle("Skills worth creating", $settings.showSkillIdeas)
-                toggle("Your usage", $settings.showUsage)
-                toggle("Usage limits (5h / 7d)", $settings.showPlan)
+                toggle("Your usage and limits", $settings.showUsage)
             }
             section("On each Code row") {
                 toggle("Git branch and changes", $settings.showGit)

@@ -11,7 +11,6 @@ final class Settings: ObservableObject {
         static let recentHours = "recentHours"
         static let showGit = "showGit"
         static let showContext = "showContext"
-        static let showPlan = "showPlan"
         static let showChats = "showChats"
         static let hiddenChats = "hiddenChats"
         static let showArtifacts = "showArtifacts"
@@ -31,13 +30,13 @@ final class Settings: ObservableObject {
     @Published var recentHours: Int { didSet { defaults.set(recentHours, forKey: Key.recentHours) } }
     @Published var showGit: Bool { didSet { defaults.set(showGit, forKey: Key.showGit) } }
     @Published var showContext: Bool { didSet { defaults.set(showContext, forKey: Key.showContext) } }
-    @Published var showPlan: Bool { didSet { defaults.set(showPlan, forKey: Key.showPlan) } }
 
     @Published var showChats: Bool { didSet { defaults.set(showChats, forKey: Key.showChats) } }
 
     @Published var showDuet: Bool { didSet { defaults.set(showDuet, forKey: Key.showDuet) } }
     @Published var showCode: Bool { didSet { defaults.set(showCode, forKey: Key.showCode) } }
     @Published var showSkillIdeas: Bool { didSet { defaults.set(showSkillIdeas, forKey: Key.showSkillIdeas) } }
+    /// One switch for both the 14-day usage block and the 5h / 7d plan meters in the footer.
     @Published var showUsage: Bool { didSet { defaults.set(showUsage, forKey: Key.showUsage) } }
     @Published var showInsights: Bool { didSet { defaults.set(showInsights, forKey: Key.showInsights) } }
     /// Skill ideas you have said no to, by name.
@@ -62,7 +61,6 @@ final class Settings: ObservableObject {
         recentHours = Self.int(Key.recentHours, default: 24)
         showGit = Self.bool(Key.showGit, default: true)
         showContext = Self.bool(Key.showContext, default: true)
-        showPlan = Self.bool(Key.showPlan, default: true)
         showChats = Self.bool(Key.showChats, default: true)
         showArtifacts = Self.bool(Key.showArtifacts, default: true)
         showGitHub = Self.bool(Key.showGitHub, default: true)
