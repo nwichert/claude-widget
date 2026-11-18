@@ -232,6 +232,140 @@ final class ChatReader: ObservableObject {
         }
     }
 
+    /// Gets Claude's window onto Duet by pressing the Claude tab and then the Claude Duet button.
+    private func navigateToDuet(_ root: AXUIElement, trace: ((String) -> Void)?) {
+        if let scan = scanSidebar(root), !scan.chatTab, let tab = scan.chatTabButton {
+            AXUIElementPerformAction(tab, kAXPressAction as CFString)
+            trace?("pressed the Claude tab")
+            Thread.sleep(forTimeInterval: 0.6)
+        }
+        var pressed = false
+        for _ in 0..<12 where !pressed {
+            var budget = 600
+            if let sidebar = findSidebar(root, depth: 0, budget: &budget),
+               let button = find(in: sidebar, budget: 500, where: { e in
+                   self.attr(e, kAXRoleAttribute) as? String == "AXButton" && self.label(e).hasPrefix("Claude Duet")
+               }) {
+                pressed = AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+            } else {
+                Thread.sleep(forTimeInterval: 0.3)
+            }
+        }
+        trace?("pressed the Claude Duet button: \(pressed)")
+    }
+
+    /// Ticks the task's checkbox in Duet's Tasks pane, which marks it complete there.
+    ///
+    /// Duet has to be on screen for this, so if Claude's window was somewhere else it is taken to
+    /// Duet, the box is ticked, and the window is put back where it was. With `dryRun` everything
+    /// happens except the tick itself.
+    func completeDuet(_ task: DuetTask, dryRun: Bool = false, trace: ((String) -> Void)? = nil) {
+        queue.async { [weak self] in
+            guard let self, let root = self.claudeRoot() else { trace?("no Claude window"); return }
+            let wasOnDuet = self.duetPage(root) != nil
+            // Sidebar present and not on the Claude tab means a Code session was showing.
+            let wasOnCode = self.scanSidebar(root).map { !$0.chatTab } ?? false
+            trace?("was on Duet: \(wasOnDuet), was on Code: \(wasOnCode)")
+            if !wasOnDuet { self.navigateToDuet(root, trace: trace) }
+
+            var done = false
+            var revealedPane = false
+            for attempt in 0..<30 where !done {
+                Thread.sleep(forTimeInterval: 0.35)
+                guard let page = self.duetPage(root) else { continue }
+                guard let pane = self.find(in: page, budget: 2_500, where: { e in
+                    self.attr(e, kAXSubroleAttribute) as? String == "AXLandmarkRegion" && self.label(e) == "Tasks"
+                }) else {
+                    // The pane is hidden: its header button brings it back.
+                    if !revealedPane, attempt >= 4, let button = self.find(in: page, budget: 400, where: { e in
+                        self.attr(e, kAXRoleAttribute) as? String == "AXButton" && self.label(e).hasPrefix("Tasks")
+                    }) {
+                        revealedPane = AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+                        trace?("showed the Tasks pane: \(revealedPane)")
+                    }
+                    continue
+                }
+                if let box = self.find(in: pane, budget: 1_500, where: { e in
+                    self.attr(e, kAXRoleAttribute) as? String == "AXCheckBox" && self.label(e) == task.title
+                }) {
+                    if dryRun {
+                        trace?("found the task's checkbox (dry run, not ticked)")
+                    } else {
+                        let result = AXUIElementPerformAction(box, kAXPressAction as CFString)
+                        trace?("ticked the checkbox: \(result.rawValue)")
+                        guard result == .success else { break }
+                    }
+                    done = true
+                } else if let more = self.find(in: pane, budget: 1_500, where: { e in
+                    self.attr(e, kAXRoleAttribute) as? String == "AXPopUpButton" && self.label(e) == "More for \(task.title)"
+                }) {
+                    // Duet only draws a task's tick box under the mouse, so use its "More" menu instead.
+                    AXUIElementPerformAction(more, kAXPressAction as CFString)
+                    Thread.sleep(forTimeInterval: 0.7)
+                    var items: [(String, AXUIElement)] = []
+                    var seen = 0
+                    func collect(_ e: AXUIElement, _ depth: Int) {
+                        seen += 1
+                        guard seen < 5_000, depth < 60 else { return }
+                        let role = self.attr(e, kAXRoleAttribute) as? String ?? ""
+                        if role == "AXMenuItem" || role == "AXMenuItemCheckbox" || role == "AXMenuItemRadio" {
+                            items.append((self.label(e), e))
+                            return
+                        }
+                        for child in self.children(e) { collect(child, depth + 1) }
+                    }
+                    for window in (self.attr(root, kAXWindowsAttribute) as? [AXUIElement]) ?? [] { collect(window, 0) }
+                    trace?("menu items: \(items.map(\.0))")
+                    let choice = items.first { item in
+                        let text = item.0.lowercased()
+                        return text.contains("complete") || text.contains("resolve") || text.contains("done")
+                    }
+                    if let choice, !dryRun {
+                        let result = AXUIElementPerformAction(choice.1, kAXPressAction as CFString)
+                        trace?("chose '\(choice.0)': \(result.rawValue)")
+                        done = result == .success
+                    } else {
+                        trace?(choice == nil ? "no complete option in the menu" : "would choose '\(choice!.0)' (dry run)")
+                        // Close the menu again without choosing anything.
+                        AXUIElementPerformAction(more, kAXPressAction as CFString)
+                        if let menu = items.first?.1 { AXUIElementPerformAction(menu, "AXCancel" as CFString) }
+                        done = choice != nil
+                    }
+                    if choice == nil { break }
+                } else if let back = self.find(in: pane, budget: 200, where: { e in
+                    self.attr(e, kAXRoleAttribute) as? String == "AXButton" && self.label(e) == "Back"
+                }) {
+                    // A task's detail is open in the pane; step back to the list.
+                    AXUIElementPerformAction(back, kAXPressAction as CFString)
+                    trace?("left the task detail to reach the list")
+                }
+            }
+            if !done { trace?("could not find the task's checkbox") }
+
+            if done, !dryRun {
+                DispatchQueue.main.async {
+                    self.duetTasks.removeAll { $0.title == task.title }
+                    if let data = try? JSONEncoder().encode(self.duetTasks) {
+                        UserDefaults.standard.set(data, forKey: self.duetKey)
+                    }
+                }
+            }
+            // Put the window back where it was.
+            if !wasOnDuet {
+                Thread.sleep(forTimeInterval: 0.6)
+                if wasOnCode, let url = URL(string: "claude://code/continue?session=last") {
+                    DispatchQueue.main.async { NSWorkspace.shared.open(url) }
+                    trace?("returned to the last Code session")
+                } else if let page = self.duetPage(root), let back = self.find(in: page, budget: 80, where: { e in
+                    self.attr(e, kAXRoleAttribute) as? String == "AXButton" && self.label(e) == "Back to Claude"
+                }) {
+                    AXUIElementPerformAction(back, kAXPressAction as CFString)
+                    trace?("returned to Claude")
+                }
+            }
+        }
+    }
+
     /// Brings Claude forward, opens Duet if it is not already showing, and clicks the task there.
     ///
     /// There is no link that does this: the app's `claude://` handler does not route to Duet
@@ -246,27 +380,7 @@ final class ChatReader: ObservableObject {
             guard let self, let root = self.claudeRoot() else { trace?("no Claude window"); return }
             let alreadyOpen = self.duetPage(root) != nil
             trace?("duet already open: \(alreadyOpen)")
-            if !alreadyOpen {
-                if let scan = self.scanSidebar(root), !scan.chatTab, let tab = scan.chatTabButton {
-                    AXUIElementPerformAction(tab, kAXPressAction as CFString)
-                    trace?("pressed the Claude tab")
-                    Thread.sleep(forTimeInterval: 0.6)
-                }
-                var pressed = false
-                for _ in 0..<12 where !pressed {
-                    var budget = 600
-                    if let sidebar = self.findSidebar(root, depth: 0, budget: &budget),
-                       let button = self.find(in: sidebar, budget: 500, where: { e in
-                           self.attr(e, kAXRoleAttribute) as? String == "AXButton" && self.label(e).hasPrefix("Claude Duet")
-                       }) {
-                        pressed = AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
-                    } else {
-                        Thread.sleep(forTimeInterval: 0.3)
-                    }
-                }
-                trace?("pressed the Claude Duet button: \(pressed)")
-            }
-            // Wait for the page and its Tasks pane to load, then press the matching task.
+            if !alreadyOpen { self.navigateToDuet(root, trace: trace) }
             guard let task else { return }
             // Two ways to land on the task, tried together until one works:
             //  - scroll the conversation to the latest message that mentions it (what you came for);

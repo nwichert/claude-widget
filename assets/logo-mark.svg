@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Claude Pulse">
+  <title>Claude Pulse</title>
+
+  <!-- Six rays of an eight-point burst. The horizontal pair is replaced by the pulse line. -->
+  <g stroke="#D97757" stroke-width="36" stroke-linecap="round">
+    <line x1="315.4" y1="196.6" x2="367.7" y2="144.3"/>
+    <line x1="256.0" y1="172.0" x2="256.0" y2="98.0"/>
+    <line x1="196.6" y1="196.6" x2="144.3" y2="144.3"/>
+    <line x1="196.6" y1="315.4" x2="144.3" y2="367.7"/>
+    <line x1="256.0" y1="340.0" x2="256.0" y2="414.0"/>
+    <line x1="315.4" y1="315.4" x2="367.7" y2="367.7"/>
+  </g>
+  <path d="M 86 256 H 196 L 218 256 L 236 212 L 262 302 L 282 232 L 294 256 H 426" fill="none" stroke="#262624" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

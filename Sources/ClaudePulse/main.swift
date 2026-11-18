@@ -30,6 +30,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Diagnostic: walk through completing the last remembered Duet task without ticking it.
+        if CommandLine.arguments.contains("--complete-duet-dry") {
+            let path = CommandLine.arguments.last ?? "/dev/null"
+            var lines = ["tasks remembered: \(chats.duetTasks.count)"]
+            let write = { try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8) }
+            _ = write()
+            if let task = chats.duetTasks.last {
+                chats.completeDuet(task, dryRun: true) { line in lines.append(line); _ = write() }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 16) { NSApp.terminate(nil) }
+            return
+        }
         // Diagnostic: click the first remembered Duet task the way a row click does, then quit.
         if CommandLine.arguments.contains("--open-duet-first") {
             let path = CommandLine.arguments.last ?? "/dev/null"

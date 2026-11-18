@@ -408,7 +408,9 @@ struct PanelView: View {
                 DuetEmptyRowView { chats.openDuet(nil) }
             } else {
                 ForEach(chats.duetTasks.prefix(8)) { task in
-                    DuetTaskRowView(task: task) { chats.openDuet(task) }
+                    DuetTaskRowView(task: task,
+                                    open: { chats.openDuet(task) },
+                                    complete: { chats.completeDuet(task) })
                 }
             }
         }
@@ -554,9 +556,14 @@ struct PanelView: View {
         let asking = store.rows.filter { $0.state == .needsInput }.count
         let working = store.rows.filter { $0.state == .working }.count
         return HStack(spacing: 10) {
-            Text("CLAUDE")
+            LogoMark()
+                .frame(width: 15, height: 15)
+                .padding(.trailing, -3)
+            Text("CLAUDE PULSE")
                 .font(.system(size: 10, weight: .semibold))
                 .kerning(1.2)
+                .lineLimit(1)
+                .fixedSize()
                 .foregroundStyle(Palette.text2)
             // Counts with their words where there is room, bare counts where there is not.
             ViewThatFits(in: .horizontal) {
@@ -637,6 +644,35 @@ struct PanelView: View {
         } else {
             Color.clear.frame(height: 8)
         }
+    }
+}
+
+/// The Claude Pulse mark: a six-ray burst with a pulse line where the horizontal rays would be.
+/// Same geometry as assets/logo.svg, drawn on a 512 grid.
+struct LogoMark: View {
+    var body: some View {
+        Canvas { context, size in
+            let scale = min(size.width, size.height) / 360   // the mark spans about 360 of the 512 grid
+            func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+                CGPoint(x: size.width / 2 + (x - 256) * scale, y: size.height / 2 + (y - 256) * scale)
+            }
+            var rays = Path()
+            for degrees in [45.0, 90, 135, 225, 270, 315] {
+                let a = degrees * .pi / 180
+                rays.move(to: point(256 + 84 * cos(a), 256 - 84 * sin(a)))
+                rays.addLine(to: point(256 + 158 * cos(a), 256 - 158 * sin(a)))
+            }
+            context.stroke(rays, with: .color(Palette.attention),
+                           style: StrokeStyle(lineWidth: 40 * scale, lineCap: .round))
+
+            var pulse = Path()
+            let points: [(CGFloat, CGFloat)] = [(86, 256), (218, 256), (236, 212), (262, 302), (282, 232), (294, 256), (426, 256)]
+            pulse.move(to: point(points[0].0, points[0].1))
+            for p in points.dropFirst() { pulse.addLine(to: point(p.0, p.1)) }
+            context.stroke(pulse, with: .color(Palette.text),
+                           style: StrokeStyle(lineWidth: 30 * scale, lineCap: .round, lineJoin: .round))
+        }
+        .accessibilityLabel("Claude Pulse")
     }
 }
 
@@ -1125,7 +1161,9 @@ private struct DuetEmptyRowView: View {
 struct DuetTaskRowView: View {
     let task: DuetTask
     let open: () -> Void
+    let complete: () -> Void
     @State private var hovering = false
+    @State private var completing = false
 
     private var color: Color {
         task.needsInput ? Palette.attention : task.readyForReview ? Palette.done : Palette.text3
@@ -1145,10 +1183,32 @@ struct DuetTaskRowView: View {
                         .foregroundStyle(task.needsInput ? Palette.text : Palette.text2)
                         .lineLimit(1)
                     Spacer(minLength: 4)
-                    Text(task.status.lowercased())
-                        .font(.system(size: 10, weight: task.needsInput ? .medium : .regular))
-                        .foregroundStyle(color)
+                    if completing {
+                        Text("completing…")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Palette.text3)
+                            .fixedSize()
+                    } else if hovering {
+                        HStack(spacing: 4) {
+                            Image(systemName: "checkmark.circle").font(.system(size: 11, weight: .medium))
+                            Text("Mark complete").font(.system(size: 10, weight: .medium))
+                        }
+                        .foregroundStyle(Palette.text)
                         .fixedSize()
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            completing = true
+                            complete()
+                            // If the tick does not land, the row comes back to normal.
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 14) { completing = false }
+                        }
+                        .help("Mark this task complete in Duet. Claude's window visits Duet briefly to do it.")
+                    } else {
+                        Text(task.status.lowercased())
+                            .font(.system(size: 10, weight: task.needsInput ? .medium : .regular))
+                            .foregroundStyle(color)
+                            .fixedSize()
+                    }
                 }
                 if let summary = task.summary {
                     Text(summary)
