@@ -182,12 +182,12 @@ struct PanelView: View {
     }
 
     @ViewBuilder private func list(limit: Int?) -> some View {
-        sessionList(limit: limit)
+        if settings.showCode { sessionList(limit: limit) }
         if settings.showGitHub, !github.pullRequests.isEmpty { pullRequestSection }
         if settings.showDuet, chats.trusted, chats.duetSeenAt != nil { duetSection }
         if settings.showArtifacts, !artifacts.items.isEmpty { artifactSection }
         if settings.showChats { chatSection }
-        if settings.showInsights, let data = insights.insights { insightsSection(data) }
+        if settings.showSkillIdeas || settings.showUsage, let data = insights.insights { insightsSection(data) }
     }
 
     @ViewBuilder private func insightsSection(_ data: Insights) -> some View {
@@ -195,12 +195,13 @@ struct PanelView: View {
         let top = Array(data.projects.prefix(5))
         let ideas = (data.skillIdeas ?? []).filter { !settings.dismissedIdeas.contains($0.name) }
         VStack(alignment: .leading, spacing: 1) {
-            if !ideas.isEmpty {
+            if settings.showSkillIdeas, !ideas.isEmpty {
                 sectionHeader("SKILLS WORTH CREATING") { Spacer() }
                 ForEach(ideas) { idea in
                     SkillIdeaRowView(idea: idea) { settings.dismissedIdeas.append(idea.name) }
                 }
             }
+            if settings.showUsage {
             sectionHeader("YOUR USAGE · LAST \(data.windowDays) DAYS") {
                 Spacer()
                 if let at = data.updatedAt {
@@ -257,7 +258,7 @@ struct PanelView: View {
             }
             .padding(.horizontal, 10)
             .padding(.bottom, 4)
-
+            }
         }
         .padding(.horizontal, 6)
     }
@@ -1310,23 +1311,25 @@ private struct SettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            section("GitHub") {
-                toggle("Pull requests that involve you", $settings.showGitHub)
-                Text(githubStatus)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(Palette.text3)
-                    .fixedSize(horizontal: false, vertical: true)
+            section("Sections") {
+                toggle("Code", $settings.showCode)
+                toggle("Pull requests", $settings.showGitHub)
+                if settings.showGitHub {
+                    Text(githubStatus)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Palette.text3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                toggle("Duet tasks", $settings.showDuet)
+                toggle("Artifacts", $settings.showArtifacts)
+                toggle("Chats", $settings.showChats)
+                toggle("Skills worth creating", $settings.showSkillIdeas)
+                toggle("Your usage", $settings.showUsage)
+                toggle("Usage limits (5h / 7d)", $settings.showPlan)
             }
-            section("Show on each row") {
+            section("On each Code row") {
                 toggle("Git branch and changes", $settings.showGit)
                 toggle("Context meter", $settings.showContext)
-            }
-            section("Show in the panel") {
-                toggle("Duet tasks", $settings.showDuet)
-                toggle("Artifacts and comments", $settings.showArtifacts)
-                toggle("Recent chats", $settings.showChats)
-                toggle("Usage and skill ideas", $settings.showInsights)
-                toggle("Plan usage footer", $settings.showPlan)
                 choice("Keep idle sessions for", $settings.recentHours,
                        [(6, "6h"), (24, "1d"), (72, "3d"), (168, "7d")])
             }

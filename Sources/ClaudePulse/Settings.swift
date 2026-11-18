@@ -16,7 +16,10 @@ final class Settings: ObservableObject {
         static let hiddenChats = "hiddenChats"
         static let showArtifacts = "showArtifacts"
         static let showGitHub = "showGitHub"
-        static let showInsights = "showInsights"
+        static let showInsights = "showInsights"   // older single switch; now the default for the two below
+        static let showCode = "showCode"
+        static let showSkillIdeas = "showSkillIdeas"
+        static let showUsage = "showUsage"
         static let showDuet = "showDuet"
         static let dismissedIdeas = "dismissedIdeas"
     }
@@ -33,6 +36,9 @@ final class Settings: ObservableObject {
     @Published var showChats: Bool { didSet { defaults.set(showChats, forKey: Key.showChats) } }
 
     @Published var showDuet: Bool { didSet { defaults.set(showDuet, forKey: Key.showDuet) } }
+    @Published var showCode: Bool { didSet { defaults.set(showCode, forKey: Key.showCode) } }
+    @Published var showSkillIdeas: Bool { didSet { defaults.set(showSkillIdeas, forKey: Key.showSkillIdeas) } }
+    @Published var showUsage: Bool { didSet { defaults.set(showUsage, forKey: Key.showUsage) } }
     @Published var showInsights: Bool { didSet { defaults.set(showInsights, forKey: Key.showInsights) } }
     /// Skill ideas you have said no to, by name.
     @Published var dismissedIdeas: [String] { didSet { defaults.set(dismissedIdeas, forKey: Key.dismissedIdeas) } }
@@ -61,6 +67,11 @@ final class Settings: ObservableObject {
         showArtifacts = Self.bool(Key.showArtifacts, default: true)
         showGitHub = Self.bool(Key.showGitHub, default: true)
         showInsights = Self.bool(Key.showInsights, default: true)
+        showCode = Self.bool(Key.showCode, default: true)
+        // Carry over whatever the combined "usage and skill ideas" switch was set to.
+        let combined = Self.bool(Key.showInsights, default: true)
+        showSkillIdeas = Self.bool(Key.showSkillIdeas, default: combined)
+        showUsage = Self.bool(Key.showUsage, default: combined)
         showDuet = Self.bool(Key.showDuet, default: true)
         dismissedIdeas = UserDefaults.standard.stringArray(forKey: Key.dismissedIdeas) ?? []
         hiddenChats = UserDefaults.standard.stringArray(forKey: Key.hiddenChats) ?? []
