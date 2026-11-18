@@ -134,6 +134,13 @@ struct PanelView: View {
                                 label: "Answer", text: row.title,
                                 action: { open(row) }))
         }
+        if settings.showDuet {
+            for task in chats.duetTasks where task.needsInput {
+                out.append(Headline(id: "duet-" + task.id, icon: "questionmark.bubble.fill", color: Palette.attention,
+                                    label: "Duet", text: task.title,
+                                    action: { DuetTaskRowView.open(task) }))
+            }
+        }
         for row in store.rows where row.state == .needsYou {
             out.append(Headline(id: "done-" + row.id, icon: "checkmark.circle.fill", color: Palette.done,
                                 label: "Done", text: row.title,
@@ -177,6 +184,7 @@ struct PanelView: View {
     @ViewBuilder private func list(limit: Int?) -> some View {
         sessionList(limit: limit)
         if settings.showGitHub, !github.pullRequests.isEmpty { pullRequestSection }
+        if settings.showDuet, chats.trusted, chats.duetSeenAt != nil { duetSection }
         if settings.showArtifacts, !artifacts.items.isEmpty { artifactSection }
         if settings.showChats { chatSection }
         if settings.showInsights, let data = insights.insights { insightsSection(data) }
@@ -288,6 +296,35 @@ struct PanelView: View {
             }
             ForEach(github.pullRequests.prefix(8)) { pr in
                 PullRequestRowView(pr: pr)
+            }
+        }
+        .padding(.horizontal, 6)
+    }
+
+    @ViewBuilder private var duetSection: some View {
+        let needs = chats.duetTasks.filter { $0.needsInput }.count
+        VStack(alignment: .leading, spacing: 1) {
+            sectionHeader("DUET TASKS") {
+                if needs > 0 {
+                    Text(needs == 1 ? "· 1 needs input" : "· \(needs) need input")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Palette.attention)
+                }
+                Spacer()
+                if let seen = chats.duetSeenAt {
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        Text(context.date.timeIntervalSince(seen) < 60 ? "live" : "as of \(Format.ago(seen, now: context.date)) ago")
+                            .font(.system(size: 10))
+                    }
+                    .help("Duet's tasks can only be read while Duet is open in the Claude app. Otherwise this is the last list seen.")
+                }
+            }
+            if chats.duetTasks.isEmpty {
+                hint("No active Duet tasks", action: nil)
+            } else {
+                ForEach(chats.duetTasks.prefix(8)) { task in
+                    DuetTaskRowView(task: task)
+                }
             }
         }
         .padding(.horizontal, 6)
@@ -910,6 +947,63 @@ private struct PulseHalo: NSViewRepresentable {
     func updateNSView(_ nsView: HaloView, context: Context) {}
 }
 
+private struct DuetTaskRowView: View {
+    let task: DuetTask
+    @State private var hovering = false
+
+    private var color: Color {
+        task.needsInput ? Palette.attention : task.readyForReview ? Palette.done : Palette.text3
+    }
+
+    /// Opens the task inside the Claude app where a link is known, otherwise Duet itself.
+    static func open(_ task: DuetTask) {
+        let web = task.url ?? "https://claude.ai/messages"
+        let inApp = web.replacingOccurrences(of: "https://", with: "claude://")
+        if let url = URL(string: inApp) ?? URL(string: web) { NSWorkspace.shared.open(url) }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: task.needsInput ? "questionmark.bubble.fill" : task.readyForReview ? "checkmark.circle" : "circle.dotted")
+                .font(.system(size: 9.5))
+                .foregroundStyle(color)
+                .frame(width: 12)
+                .padding(.top, 3)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(task.title)
+                        .font(.system(size: 12, weight: task.needsInput ? .semibold : .regular))
+                        .foregroundStyle(task.needsInput ? Palette.text : Palette.text2)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text(task.status.lowercased())
+                        .font(.system(size: 10, weight: task.needsInput ? .medium : .regular))
+                        .foregroundStyle(color)
+                        .fixedSize()
+                }
+                if let summary = task.summary {
+                    Text(summary)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Palette.text3)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(task.needsInput
+                      ? Palette.attention.opacity(hovering ? 0.16 : 0.09)
+                      : (hovering ? Palette.raised : Color.clear))
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .onTapGesture { Self.open(task) }
+        .help([task.title, task.status, task.summary ?? ""].filter { !$0.isEmpty }.joined(separator: "\n"))
+    }
+}
+
 private struct SkillIdeaRowView: View {
     let idea: Insights.SkillIdea
     let dismiss: () -> Void
@@ -1175,6 +1269,7 @@ private struct SettingsView: View {
                 toggle("Context meter", $settings.showContext)
             }
             section("Show in the panel") {
+                toggle("Duet tasks", $settings.showDuet)
                 toggle("Artifacts and comments", $settings.showArtifacts)
                 toggle("Recent chats", $settings.showChats)
                 toggle("Usage and skill ideas", $settings.showInsights)

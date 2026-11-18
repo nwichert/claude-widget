@@ -9,6 +9,19 @@ struct ChatItem: Identifiable, Equatable, Codable {
     var id: String { title }
 }
 
+/// A task from Claude Duet's Tasks pane.
+struct DuetTask: Identifiable, Equatable, Codable {
+    var title: String
+    /// The group it sits under, as Duet words it: "Needs input", "Ready for review", ...
+    var status: String
+    var summary: String?
+    var url: String?
+    var id: String { title }
+
+    var needsInput: Bool { status.lowercased().contains("input") }
+    var readyForReview: Bool { status.lowercased().contains("review") }
+}
+
 /// Reads the "Recents" chat list out of Claude Desktop's sidebar through the Accessibility API.
 ///
 /// Chats are stored on Anthropic's servers, so this is the only local view of them, and it has
@@ -18,6 +31,13 @@ final class ChatReader: ObservableObject {
     @Published private(set) var chats: [ChatItem] = []
     @Published private(set) var seenAt: Date?
     @Published private(set) var trusted = AXIsProcessTrusted()
+
+    /// Tasks from Claude Duet, as of the last time its page was open in the app (`duetSeenAt`).
+    /// Like chats, Duet is only readable while it is on screen.
+    @Published private(set) var duetTasks: [DuetTask] = []
+    @Published private(set) var duetSeenAt: Date?
+    private let duetKey = "duetTasks"
+    private let duetSeenKey = "duetTasksSeenAt"
 
     /// What the sidebar looked like on the last pass, for the session reader (any thread).
     struct Sidebar {
@@ -48,6 +68,12 @@ final class ChatReader: ObservableObject {
             chats = cached
             let t = UserDefaults.standard.double(forKey: seenKey)
             seenAt = t > 0 ? Date(timeIntervalSince1970: t) : nil
+        }
+        if let data = UserDefaults.standard.data(forKey: duetKey),
+           let cached = try? JSONDecoder().decode([DuetTask].self, from: data) {
+            duetTasks = cached
+            let t = UserDefaults.standard.double(forKey: duetSeenKey)
+            duetSeenAt = t > 0 ? Date(timeIntervalSince1970: t) : nil
         }
     }
 
@@ -94,7 +120,9 @@ final class ChatReader: ObservableObject {
     private func tick() {
         let isTrusted = AXIsProcessTrusted()
         if isTrusted != trusted { DispatchQueue.main.async { self.trusted = isTrusted } }
-        guard isTrusted, let root = claudeRoot(), let scan = scanSidebar(root) else { return }
+        guard isTrusted, let root = claudeRoot() else { return }
+        if Settings.bool(Settings.Key.showDuet, default: true) { readDuet(root) }
+        guard let scan = scanSidebar(root) else { return }
 
         var badges: [String: String] = [:]
         for row in scan.rows { if let badge = row.badge { badges[row.title] = badge } }
@@ -115,6 +143,89 @@ final class ChatReader: ObservableObject {
             if self.chats != items { self.chats = items }
             self.seenAt = now
         }
+    }
+
+    // MARK: - Duet
+
+    /// Duet is the page at claude.ai/messages. When it is showing, read the Active tab of its Tasks pane.
+    private func readDuet(_ root: AXUIElement) {
+        guard let page = duetPage(root), let pane = find(in: page, budget: 1_500, where: { e in
+            self.attr(e, kAXSubroleAttribute) as? String == "AXLandmarkRegion" && self.label(e) == "Tasks"
+        }) else { return }
+
+        var group = ""
+        var activeTab = true
+        var tasks: [DuetTask] = []
+        var visited = 0
+        func walk(_ e: AXUIElement, _ depth: Int) {
+            visited += 1
+            guard visited < 1_200, depth < 40 else { return }
+            let role = attr(e, kAXRoleAttribute) as? String ?? ""
+            switch role {
+            case "AXRadioButton":
+                // Tabs: Active, Up next, Scheduled, Resolved. Only the Active list is kept.
+                if (attr(e, kAXValueAttribute) as? NSNumber)?.intValue == 1 {
+                    activeTab = label(e) == "Active" || staticTexts(in: e, depth: 0).first == "Active"
+                }
+            case "AXHeading":
+                // "Ready for review 3 tasks" -> "Ready for review"
+                group = label(e).replacingOccurrences(of: #"\s+\d+\s+tasks?$"#, with: "", options: .regularExpression)
+            case "AXLink":
+                guard let title = staticTexts(in: e, depth: 0).first, !group.isEmpty else { break }
+                // The link's own label reads "Title, Status, summary".
+                var summary: String?
+                let full = label(e)
+                let prefix = "\(title), \(group), "
+                if full.hasPrefix(prefix) { summary = String(full.dropFirst(prefix.count)) }
+                let url = (attr(e, kAXURLAttribute) as? URL)?.absoluteString
+                if !tasks.contains(where: { $0.title == title }) {
+                    tasks.append(DuetTask(title: title, status: group, summary: summary?.isEmpty == false ? summary : nil, url: url))
+                }
+                return  // nothing useful below a task link
+            default:
+                break
+            }
+            for child in children(e) { walk(child, depth + 1) }
+        }
+        walk(pane, 0)
+        guard activeTab else { return }
+
+        tasks.sort { ($0.needsInput ? 0 : $0.readyForReview ? 1 : 2) < ($1.needsInput ? 0 : $1.readyForReview ? 1 : 2) }
+        let now = Date()
+        if let data = try? JSONEncoder().encode(tasks) {
+            UserDefaults.standard.set(data, forKey: duetKey)
+            UserDefaults.standard.set(now.timeIntervalSince1970, forKey: duetSeenKey)
+        }
+        DispatchQueue.main.async {
+            if self.duetTasks != tasks { self.duetTasks = tasks }
+            self.duetSeenAt = now
+        }
+    }
+
+    private func duetPage(_ root: AXUIElement) -> AXUIElement? {
+        for window in (attr(root, kAXWindowsAttribute) as? [AXUIElement]) ?? [] {
+            if let page = find(in: window, budget: 60, maxDepth: 12, where: { e in
+                guard self.attr(e, kAXRoleAttribute) as? String == "AXWebArea",
+                      let url = (self.attr(e, kAXURLAttribute) as? URL)?.absoluteString else { return false }
+                return url.contains("claude.ai/messages")
+            }) { return page }
+        }
+        return nil
+    }
+
+    /// Depth-first search for the first element matching a test, giving up after `budget` elements.
+    private func find(in e: AXUIElement, budget: Int, maxDepth: Int = 40, where test: (AXUIElement) -> Bool) -> AXUIElement? {
+        var left = budget
+        func search(_ e: AXUIElement, _ depth: Int) -> AXUIElement? {
+            left -= 1
+            guard left > 0, depth < maxDepth else { return nil }
+            if test(e) { return e }
+            for child in children(e) {
+                if let found = search(child, depth + 1) { return found }
+            }
+            return nil
+        }
+        return search(e, 0)
     }
 
     private func claudeRoot() -> AXUIElement? {

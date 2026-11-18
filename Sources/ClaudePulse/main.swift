@@ -30,6 +30,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let i = CommandLine.arguments.firstIndex(of: "--ax-follow"), CommandLine.arguments.count > i + 2 {
+            let path = CommandLine.arguments[i + 1]
+            let seconds = Int(CommandLine.arguments[i + 2]) ?? 120
+            DispatchQueue.global().async {
+                AXProbe.follow(to: path, seconds: seconds)
+                DispatchQueue.main.async { NSApp.terminate(nil) }
+            }
+            return
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--ax-watch"), CommandLine.arguments.count > i + 2 {
             let path = CommandLine.arguments[i + 1]
             let seconds = Int(CommandLine.arguments[i + 2]) ?? 60
@@ -52,7 +61,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             DispatchQueue.global().async {
                 AXProbe.run(to: path,
                             verbose: CommandLine.arguments.contains("--verbose"),
-                            waitForChatTab: CommandLine.arguments.contains("--wait-chat"))
+                            waitForChatTab: CommandLine.arguments.contains("--wait-chat"),
+                            waitForURL: CommandLine.arguments.firstIndex(of: "--wait-url")
+                                .flatMap { CommandLine.arguments.indices.contains($0 + 1) ? CommandLine.arguments[$0 + 1] : nil })
                 DispatchQueue.main.async { NSApp.terminate(nil) }
             }
             return

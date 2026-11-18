@@ -17,6 +17,7 @@ final class Settings: ObservableObject {
         static let showArtifacts = "showArtifacts"
         static let showGitHub = "showGitHub"
         static let showInsights = "showInsights"
+        static let showDuet = "showDuet"
         static let dismissedIdeas = "dismissedIdeas"
     }
 
@@ -31,6 +32,7 @@ final class Settings: ObservableObject {
 
     @Published var showChats: Bool { didSet { defaults.set(showChats, forKey: Key.showChats) } }
 
+    @Published var showDuet: Bool { didSet { defaults.set(showDuet, forKey: Key.showDuet) } }
     @Published var showInsights: Bool { didSet { defaults.set(showInsights, forKey: Key.showInsights) } }
     /// Skill ideas you have said no to, by name.
     @Published var dismissedIdeas: [String] { didSet { defaults.set(dismissedIdeas, forKey: Key.dismissedIdeas) } }
@@ -59,6 +61,7 @@ final class Settings: ObservableObject {
         showArtifacts = Self.bool(Key.showArtifacts, default: true)
         showGitHub = Self.bool(Key.showGitHub, default: true)
         showInsights = Self.bool(Key.showInsights, default: true)
+        showDuet = Self.bool(Key.showDuet, default: true)
         dismissedIdeas = UserDefaults.standard.stringArray(forKey: Key.dismissedIdeas) ?? []
         hiddenChats = UserDefaults.standard.stringArray(forKey: Key.hiddenChats) ?? []
     }
