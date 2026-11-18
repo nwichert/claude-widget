@@ -104,7 +104,7 @@ Known limits:
 - **Chats and Duet are only read while they are on screen** in Claude Desktop. Otherwise the widget shows the last list it saw, marked with its age. A Duet task that changes while Duet is closed is not noticed until Duet is opened again.
 - **Chats have no working or waiting state** and no token counts; only a title and a badge are available.
 - **Context percentages are inferred.** Claude does not record a model's context window size anywhere readable, so the widget assumes 1M tokens once it has seen a model go past 200k, and 200k otherwise.
-- **Plan usage (the 5h / 7d meters) is not live.** It is the last sample Claude Desktop saved, shown with its age.
+- **The usage limit in the footer is read from Claude Desktop's usage ring.** It shows whichever limit the ring is showing (5-hour or weekly) and updates only while a page with that ring is open; otherwise it is the last reading, shown with its age.
 - **Opening a chat or a Duet task presses buttons in Claude Desktop** on your behalf, so the Claude window visibly switches tabs.
 
 ## Project layout

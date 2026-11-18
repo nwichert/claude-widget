@@ -9,6 +9,47 @@ struct ChatItem: Identifiable, Equatable, Codable {
     var id: String { title }
 }
 
+/// The usage figure Claude Desktop shows in its usage ring, e.g. "77% of 5-hour limit".
+struct LiveUsage: Equatable, Codable {
+    var percent: Int
+    /// Which limit this is, as Claude words it: "5-hour limit", "Weekly · all models", ...
+    var limit: String
+    /// When it resets, as Claude words it: "4:40 PM", "Sat 6:00 PM".
+    var resets: String?
+    var seenAt: Date
+
+    /// "5h", "7d", or the limit's own name when it is neither.
+    var shortLabel: String {
+        let text = limit.lowercased()
+        if text.contains("5-hour") || text.contains("5 hour") { return "5h" }
+        if text.contains("week") { return "7d" }
+        return limit
+    }
+
+    /// Parses the ring's accessibility label. Two shapes have been seen:
+    ///   "Usage: 77% of 5-hour limit, Resets at 4:40 PM"
+    ///   "Usage: Weekly · all models: 43%, Resets Sat 6:00 PM"
+    static func parse(_ label: String, at date: Date) -> LiveUsage? {
+        var text = label
+        if let r = text.range(of: "Usage:") { text = String(text[r.upperBound...]) }
+        guard let match = text.range(of: #"\d+%"#, options: .regularExpression),
+              let percent = Int(text[match].dropLast()) else { return nil }
+        var resets: String?
+        var head = text
+        if let r = text.range(of: "Resets", options: .caseInsensitive) {
+            head = String(text[..<r.lowerBound])
+            var when = text[r.upperBound...].trimmingCharacters(in: .whitespaces)
+            if when.lowercased().hasPrefix("at ") { when = String(when.dropFirst(3)) }
+            resets = when.isEmpty ? nil : when
+        }
+        // What is left once the percentage and filler words are removed names the limit.
+        var limit = head.replacingOccurrences(of: #"\d+%"#, with: "", options: .regularExpression)
+        limit = limit.replacingOccurrences(of: " of ", with: " ")
+        limit = limit.trimmingCharacters(in: CharacterSet(charactersIn: " ,:"))
+        return LiveUsage(percent: percent, limit: limit.isEmpty ? "limit" : limit, resets: resets, seenAt: date)
+    }
+}
+
 /// A task from Claude Duet's Tasks pane.
 struct DuetTask: Identifiable, Equatable, Codable {
     var title: String
@@ -36,6 +77,11 @@ final class ChatReader: ObservableObject {
     /// Like chats, Duet is only readable while it is on screen.
     @Published private(set) var duetTasks: [DuetTask] = []
     @Published private(set) var duetSeenAt: Date?
+    /// Claude's own live usage figure, read off the usage ring whenever a page that shows it is open.
+    @Published private(set) var liveUsage: LiveUsage?
+    private let usageKey = "liveUsage"
+    private var tickCount = 0
+
     /// Called on the main queue when a Duet task is seen needing input for the first time.
     var onDuetNeedsInput: ((DuetTask) -> Void)?
     /// Titles already known to need input, so each task alerts once. Touched only on the reader queue.
@@ -72,6 +118,9 @@ final class ChatReader: ObservableObject {
             chats = cached
             let t = UserDefaults.standard.double(forKey: seenKey)
             seenAt = t > 0 ? Date(timeIntervalSince1970: t) : nil
+        }
+        if let data = UserDefaults.standard.data(forKey: usageKey) {
+            liveUsage = try? JSONDecoder().decode(LiveUsage.self, from: data)
         }
         if let data = UserDefaults.standard.data(forKey: duetKey),
            let cached = try? JSONDecoder().decode([DuetTask].self, from: data) {
@@ -128,6 +177,9 @@ final class ChatReader: ObservableObject {
         if isTrusted != trusted { DispatchQueue.main.async { self.trusted = isTrusted } }
         guard isTrusted, let root = claudeRoot() else { return }
         if Settings.bool(Settings.Key.showDuet, default: true) { readDuet(root) }
+        // The ring sits deep in the page, so finding it is the costliest read here: every third pass.
+        tickCount += 1
+        if tickCount % 3 == 1, Settings.bool(Settings.Key.showUsage, default: true) { readUsage(root) }
         guard let scan = scanSidebar(root) else { return }
 
         var badges: [String: String] = [:]
@@ -148,6 +200,19 @@ final class ChatReader: ObservableObject {
         DispatchQueue.main.async {
             if self.chats != items { self.chats = items }
             self.seenAt = now
+        }
+    }
+
+    // MARK: - Usage
+
+    private func readUsage(_ root: AXUIElement) {
+        for window in (attr(root, kAXWindowsAttribute) as? [AXUIElement]) ?? [] {
+            guard let ring = find(in: window, budget: 4_000, maxDepth: 70, where: { e in
+                self.attr(e, kAXRoleAttribute) as? String == "AXPopUpButton" && self.label(e).hasPrefix("Usage")
+            }), let usage = LiveUsage.parse(label(ring), at: Date()) else { continue }
+            if let data = try? JSONEncoder().encode(usage) { UserDefaults.standard.set(data, forKey: usageKey) }
+            DispatchQueue.main.async { self.liveUsage = usage }
+            return
         }
     }
 
@@ -589,6 +654,23 @@ final class ChatReader: ObservableObject {
             try? log.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
             Thread.sleep(forTimeInterval: 3)
         }
+    }
+
+    /// Diagnostic: the raw accessibility text of Claude's usage ring, every attribute.
+    func debugUsageLabel() -> String {
+        guard AXIsProcessTrusted(), let root = claudeRoot() else { return "no access" }
+        var out: [String] = []
+        for window in (attr(root, kAXWindowsAttribute) as? [AXUIElement]) ?? [] {
+            if let ring = find(in: window, budget: 4_000, maxDepth: 70, where: { e in
+                self.attr(e, kAXRoleAttribute) as? String == "AXPopUpButton" && self.label(e).hasPrefix("Usage")
+            }) {
+                for name in [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute, kAXHelpAttribute] {
+                    out.append("\(name): \((attr(ring, name) as? String) ?? "-")")
+                }
+                out.append("children: \(staticTexts(in: ring, depth: 0))")
+            }
+        }
+        return out.isEmpty ? "usage ring not found" : out.joined(separator: "\n")
     }
 
     /// Diagnostic: what one sidebar pass found, as counts only.

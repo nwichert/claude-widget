@@ -31,6 +31,8 @@ final class PanelLayout: ObservableObject {
     static let chatPage = 5
     static let chatMax = 15
     @Published var chatLimit = PanelLayout.chatPage
+    /// Whether Code sessions not touched today are expanded.
+    @Published var showOlderSessions = false
 
     /// Collapsed to a one-line ticker. The full size is kept and comes back on expand.
     static let compactSize = CGSize(width: 340, height: 38)
@@ -215,7 +217,14 @@ struct PanelView: View {
                                 action: { open(row) }))
         }
         // Usage closes every rotation, so the ticker always has something to show.
-        if let plan = store.plan {
+        if let usage = chats.liveUsage {
+            let age = Date().timeIntervalSince(usage.seenAt) < 90 ? "live" : "as of \(Format.ago(usage.seenAt)) ago"
+            out.append(Headline(id: "usage-live", icon: "gauge.medium",
+                                color: usage.percent >= 80 ? Palette.attention : Palette.text2,
+                                label: "Usage",
+                                text: "\(usage.percent)% of \(usage.limit)" + (usage.resets.map { " · resets \($0)" } ?? "") + " · \(age)",
+                                action: { layout.minimized = false }))
+        } else if let plan = store.plan {
             let high = max(plan.fiveHour, plan.sevenDay) >= 80
             let age = Date().timeIntervalSince(plan.sampledAt) < 60 ? "just now" : "\(Format.ago(plan.sampledAt)) ago"
             out.append(Headline(id: "usage-plan", icon: "gauge.medium",
@@ -238,27 +247,110 @@ struct PanelView: View {
     }
 
     @ViewBuilder private func list(limit: Int?) -> some View {
+        needsYouSection
         if settings.showCode { sessionList(limit: limit) }
-        if settings.showGitHub, !github.pullRequests.isEmpty { pullRequestSection }
-        if settings.showDuet, chats.trusted, chats.duetSeenAt != nil { duetSection }
-        if settings.showArtifacts, !artifacts.items.isEmpty { artifactSection }
+        if settings.showGitHub, !otherPullRequests.isEmpty { pullRequestSection }
+        if settings.showDuet, chats.trusted, chats.duetSeenAt != nil, !(otherDuetTasks.isEmpty && !urgentDuetTasks.isEmpty) {
+            duetSection
+        }
+        if settings.showArtifacts, !otherArtifacts.isEmpty { artifactSection }
         if settings.showChats { chatSection }
-        if settings.showSkillIdeas || settings.showUsage, let data = insights.insights { insightsSection(data) }
+        if let data = insights.insights {
+            if settings.showSkillIdeas { skillsSection(data) }
+            if settings.showUsage { usageSection(data) }
+        }
+        Color.clear.frame(height: 8)  // so the last row never sits against the footer when scrolled
     }
 
-    @ViewBuilder private func insightsSection(_ data: Insights) -> some View {
-        let total = max(1, data.projects.reduce(0) { $0 + $1.outputTokens })
-        let top = Array(data.projects.prefix(5))
-        let ideas = (data.skillIdeas ?? []).filter { !settings.dismissedIdeas.contains($0.name) }
-        VStack(alignment: .leading, spacing: 1) {
-            if settings.showSkillIdeas, !ideas.isEmpty {
-                sectionHeader("SKILLS WORTH CREATING") { Spacer() }
-                ForEach(ideas) { idea in
-                    SkillIdeaRowView(idea: idea) { settings.dismissedIdeas.append(idea.name) }
+    // MARK: Needs you
+
+    // Everything whose next move is yours, wherever it comes from. These rows are lifted out of
+    // their home sections and shown once, at the top.
+    private var urgentSessions: [SessionRow] { settings.showCode ? store.rows.filter { $0.wantsYou } : [] }
+    private var urgentDuetTasks: [DuetTask] {
+        settings.showDuet ? chats.duetTasks.filter { $0.needsInput || $0.readyForReview } : []
+    }
+    private var otherDuetTasks: [DuetTask] { chats.duetTasks.filter { !$0.needsInput && !$0.readyForReview } }
+    private var urgentArtifacts: [ArtifactItem] {
+        settings.showArtifacts ? artifacts.items.filter { ($0.mentions ?? 0) > 0 || $0.newShareAt != nil } : []
+    }
+    private var otherArtifacts: [ArtifactItem] {
+        artifacts.items.filter { ($0.mentions ?? 0) == 0 && $0.newShareAt == nil }
+    }
+    private var urgentPullRequests: [PullRequest] {
+        settings.showGitHub ? github.pullRequests.filter { $0.status.needsYou } : []
+    }
+    private var otherPullRequests: [PullRequest] { github.pullRequests.filter { !$0.status.needsYou } }
+
+    @ViewBuilder private var needsYouSection: some View {
+        let sessions = urgentSessions
+        let tasks = urgentDuetTasks
+        let shared = urgentArtifacts
+        let prs = urgentPullRequests
+        let count = sessions.count + tasks.count + shared.count + prs.count
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text("NEEDS YOU")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .kerning(0.8)
+                    .foregroundStyle(count > 0 ? Palette.text : Palette.text3)
+                if count > 0 {
+                    Text("\(count)")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(Palette.attention)
+                        .monospacedDigit()
+                } else {
+                    Text("· nothing right now")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Palette.text3)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 2)
+            .padding(.bottom, count > 0 ? 5 : 0)
+
+            ForEach(sessions) { row in sessionRow(row) }
+            ForEach(tasks) { task in
+                DuetTaskRowView(task: task,
+                                open: { chats.openDuet(task) },
+                                complete: { chats.completeDuet(task) })
+            }
+            ForEach(shared) { item in ArtifactRowView(item: item) }
+            ForEach(prs) { pr in PullRequestRowView(pr: pr) }
+        }
+        .padding(.horizontal, 6)
+    }
+
+    // MARK: Skills and usage
+
+    /// A suggested skill that has since been created does not need suggesting.
+    private static func skillExists(_ name: String) -> Bool {
+        FileManager.default.fileExists(atPath: NSHomeDirectory() + "/.claude/skills/" + name)
+    }
+
+    @ViewBuilder private func skillsSection(_ data: Insights) -> some View {
+        let ideas = (data.skillIdeas ?? []).filter {
+            !settings.dismissedIdeas.contains($0.name) && !Self.skillExists($0.name)
+        }
+        if !ideas.isEmpty {
+            VStack(alignment: .leading, spacing: 1) {
+                sectionHeader("SKILLS WORTH CREATING", id: "skills", count: ideas.count) { Spacer() }
+                if !settings.isCollapsed("skills") {
+                    ForEach(ideas) { idea in
+                        SkillIdeaRowView(idea: idea) { settings.dismissedIdeas.append(idea.name) }
+                    }
                 }
             }
-            if settings.showUsage {
-            sectionHeader("YOUR USAGE · LAST \(data.windowDays) DAYS") {
+            .padding(.horizontal, 6)
+        }
+    }
+
+    @ViewBuilder private func usageSection(_ data: Insights) -> some View {
+        let total = max(1, data.projects.reduce(0) { $0 + $1.outputTokens })
+        let top = Array(data.projects.prefix(5))
+        VStack(alignment: .leading, spacing: 1) {
+            sectionHeader("YOUR USAGE · LAST \(data.windowDays) DAYS", id: "usage") {
                 Spacer()
                 if let at = data.updatedAt {
                     TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -268,6 +360,7 @@ struct PanelView: View {
                     .help("Counts are exact, read from your local transcripts. What the work was for, and the skill ideas, are a Claude session's reading of your prompts.")
                 }
             }
+            if !settings.isCollapsed("usage") {
             VStack(alignment: .leading, spacing: 7) {
                 Text("\(data.totals.sessions) sessions · \(data.totals.prompts) prompts · \(Format.tokens(data.totals.outputTokens)) tokens written")
                     .font(.system(size: 11.5))
@@ -348,41 +441,56 @@ struct PanelView: View {
         return github.pullRequests.filter { $0.repo.lowercased() == repo }
     }
 
-    private func sectionHeader<Trailing: View>(_ title: String, @ViewBuilder trailing: () -> Trailing) -> some View {
+    /// A section title. With an `id` it is a disclosure: click to fold the section, remembered.
+    private func sectionHeader<Trailing: View>(_ title: String, id: String? = nil, count: Int? = nil,
+                                               @ViewBuilder trailing: () -> Trailing) -> some View {
         HStack(spacing: 6) {
+            if let id {
+                Image(systemName: settings.isCollapsed(id) ? "chevron.right" : "chevron.down")
+                    .font(.system(size: 7.5, weight: .bold))
+                    .frame(width: 8)
+            }
             Text(title)
-                .font(.system(size: 9.5, weight: .semibold))
+                .font(.system(size: 10.5, weight: .semibold))
                 .kerning(0.8)
+                .foregroundStyle(Palette.text2)
+            if let count {
+                Text("\(count)")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .monospacedDigit()
+            }
             trailing()
         }
         .foregroundStyle(Palette.text3)
         .padding(.horizontal, 10)
-        .padding(.top, 10)
-        .padding(.bottom, 4)
+        .padding(.top, 15)
+        .padding(.bottom, 5)
+        // A hairline above each section gives the eye something to land on when scanning.
+        .overlay(alignment: .top) {
+            Rectangle().fill(Palette.border).frame(height: 1).padding(.horizontal, 10).padding(.top, 7)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { if let id { settings.toggleCollapsed(id) } }
+        .help(id == nil ? "" : (settings.isCollapsed(id!) ? "Show this section" : "Hide this section"))
     }
 
     @ViewBuilder private var pullRequestSection: some View {
-        let needs = github.pullRequests.filter { $0.status.needsYou }.count
+        let rest = otherPullRequests
         VStack(alignment: .leading, spacing: 1) {
-            sectionHeader("PULL REQUESTS") {
-                Spacer()
-                if needs > 0 {
-                    Text(needs == 1 ? "1 needs you" : "\(needs) need you")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(Palette.attention)
+            sectionHeader("PULL REQUESTS", id: "prs", count: rest.count) { Spacer() }
+            if !settings.isCollapsed("prs") {
+                ForEach(rest.prefix(8)) { pr in
+                    PullRequestRowView(pr: pr)
                 }
-            }
-            ForEach(github.pullRequests.prefix(8)) { pr in
-                PullRequestRowView(pr: pr)
             }
         }
         .padding(.horizontal, 6)
     }
 
     @ViewBuilder private var duetSection: some View {
-        let needs = chats.duetTasks.filter { $0.needsInput }.count
+        let rest = otherDuetTasks
         VStack(alignment: .leading, spacing: 1) {
-            sectionHeader("DUET TASKS") {
+            sectionHeader("DUET TASKS", id: "duet", count: rest.isEmpty ? nil : rest.count) {
                 // The header is a way into Duet whether or not there are tasks.
                 Image(systemName: "arrow.up.right")
                     .font(.system(size: 8, weight: .semibold))
@@ -390,11 +498,6 @@ struct PanelView: View {
                     .contentShape(Rectangle())
                     .onTapGesture { chats.openDuet(nil) }
                     .help("Open Claude Duet")
-                if needs > 0 {
-                    Text(needs == 1 ? "· 1 needs input" : "· \(needs) need input")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(Palette.attention)
-                }
                 Spacer()
                 if let seen = chats.duetSeenAt {
                     TimelineView(.periodic(from: .now, by: 30)) { context in
@@ -404,13 +507,15 @@ struct PanelView: View {
                     .help("Duet's tasks can only be read while Duet is open in the Claude app. Otherwise this is the last list seen.")
                 }
             }
-            if chats.duetTasks.isEmpty {
-                DuetEmptyRowView { chats.openDuet(nil) }
-            } else {
-                ForEach(chats.duetTasks.prefix(8)) { task in
-                    DuetTaskRowView(task: task,
-                                    open: { chats.openDuet(task) },
-                                    complete: { chats.completeDuet(task) })
+            if !settings.isCollapsed("duet") {
+                if rest.isEmpty {
+                    DuetEmptyRowView { chats.openDuet(nil) }
+                } else {
+                    ForEach(rest.prefix(8)) { task in
+                        DuetTaskRowView(task: task,
+                                        open: { chats.openDuet(task) },
+                                        complete: { chats.completeDuet(task) })
+                    }
                 }
             }
         }
@@ -418,15 +523,14 @@ struct PanelView: View {
     }
 
     @ViewBuilder private var artifactSection: some View {
-        // Already ordered by the store: tags for you, new shares, your recent work, then comment activity.
-        // Your own recent work is capped at four so it cannot crowd out what other people are doing.
-        let urgent = artifacts.items.filter { ($0.mentions ?? 0) > 0 || $0.newShareAt != nil }
-        let rest = artifacts.items.filter { ($0.mentions ?? 0) == 0 && $0.newShareAt == nil }
+        // Tags and new shares are in "Needs you". Here: your recent work (capped at four so it
+        // cannot crowd out other people's), then artifacts with comment activity.
+        let rest = otherArtifacts
         let active = Array(rest.filter { $0.isActive }.prefix(4))
         let others = rest.filter { !$0.isActive && $0.isCollaboration }
-        let shown = Array((urgent + active + others).prefix(max(8, urgent.count)))
+        let shown = Array((active + others).prefix(8))
         VStack(alignment: .leading, spacing: 1) {
-            sectionHeader("ARTIFACTS") {
+            sectionHeader("ARTIFACTS", id: "artifacts", count: shown.count) {
                 Spacer()
                 if let at = artifacts.updatedAt {
                     TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -435,8 +539,10 @@ struct PanelView: View {
                     .help("Artifacts and comments come from a snapshot a Claude session writes. They are not live.")
                 }
             }
-            ForEach(shown) { item in
-                ArtifactRowView(item: item)
+            if !settings.isCollapsed("artifacts") {
+                ForEach(shown) { item in
+                    ArtifactRowView(item: item)
+                }
             }
         }
         .padding(.horizontal, 6)
@@ -448,7 +554,7 @@ struct PanelView: View {
         let available = chats.chats.filter { !hidden.contains($0.title) }
         let visible = Array(available.prefix(layout.chatLimit))
         VStack(alignment: .leading, spacing: 1) {
-            sectionHeader("CHATS") {
+            sectionHeader("CHATS", id: "chats", count: available.count) {
                 if !hidden.isEmpty {
                     Text("· \(hidden.count) hidden")
                         .font(.system(size: 10))
@@ -468,6 +574,7 @@ struct PanelView: View {
                 }
             }
 
+            if !settings.isCollapsed("chats") {
             if !chats.trusted {
                 hint("Allow Accessibility access to list chats", action: chats.requestAccess)
             } else if chats.chats.isEmpty {
@@ -496,6 +603,7 @@ struct PanelView: View {
                 .padding(.horizontal, 10)
                 .padding(.top, 3)
             }
+            }
         }
         .padding(.horizontal, 6)
     }
@@ -520,35 +628,54 @@ struct PanelView: View {
     }
 
     @ViewBuilder private func sessionList(limit: Int?) -> some View {
-        if store.rows.isEmpty {
-            Text("No sessions active in the last \(Format.span(hours: settings.recentHours))")
-                .font(.system(size: 12))
-                .foregroundStyle(Palette.text2)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.vertical, 22)
-        } else {
-            let shown = limit.map { Array(store.rows.prefix($0)) } ?? store.rows
-            VStack(alignment: .leading, spacing: 1) {
-                sectionHeader("CODE") { Spacer() }
-                    .padding(.top, -8)
-                ForEach(shown) { row in
-                    SessionRowView(row: row,
-                                   pullRequests: settings.showGitHub ? pullRequests(for: row) : [],
-                                   showGit: settings.showGit,
-                                   showContext: settings.showContext,
-                                   action: { open(row) },
-                                   dismiss: { store.markSeen(row) })
+        // Sessions waiting on you are in "Needs you"; this is everything else. Anything not
+        // touched today is folded away behind one line.
+        let rows = store.rows.filter { !$0.wantsYou }
+        let startOfToday = Calendar.current.startOfDay(for: Date())
+        let recent = rows.filter { $0.state == .working || $0.lastActivity >= startOfToday }
+        let older = rows.filter { $0.state != .working && $0.lastActivity < startOfToday }
+        let shown = limit.map { Array(recent.prefix($0)) } ?? recent
+        VStack(alignment: .leading, spacing: 1) {
+            sectionHeader("CODE", id: "code", count: rows.count) { Spacer() }
+            if !settings.isCollapsed("code") {
+                if rows.isEmpty {
+                    hint(store.rows.isEmpty
+                         ? "No sessions active in the last \(Format.span(hours: settings.recentHours))"
+                         : "No other sessions", action: nil)
                 }
-                if store.rows.count > shown.count {
-                    Text("+\(store.rows.count - shown.count) more · drag the panel taller to see them")
+                ForEach(shown) { row in sessionRow(row) }
+                if recent.count > shown.count {
+                    Text("+\(recent.count - shown.count) more · drag the panel taller to see them")
                         .font(.system(size: 10.5))
                         .foregroundStyle(Palette.text3)
                         .padding(.horizontal, 10)
                         .padding(.top, 4)
                 }
+                if !older.isEmpty {
+                    pager(layout.showOlderSessions
+                          ? "Hide older"
+                          : (older.count == 1 ? "1 older session" : "\(older.count) older sessions")) {
+                        layout.showOlderSessions.toggle()
+                    }
+                    .padding(.horizontal, 10)
+                    if layout.showOlderSessions {
+                        ForEach(older) { row in sessionRow(row) }
+                    }
+                }
             }
-            .padding(.horizontal, 6)
         }
+        .padding(.horizontal, 6)
+    }
+
+    /// Idle sessions get one line; working and waiting ones get the full row.
+    private func sessionRow(_ row: SessionRow) -> some View {
+        SessionRowView(row: row,
+                       pullRequests: settings.showGitHub ? pullRequests(for: row) : [],
+                       showGit: settings.showGit,
+                       showContext: settings.showContext,
+                       compact: row.state == .idle,
+                       action: { open(row) },
+                       dismiss: { store.markSeen(row) })
     }
 
     private var header: some View {
@@ -626,7 +753,34 @@ struct PanelView: View {
     }
 
     @ViewBuilder private var footer: some View {
-        if settings.showUsage, !layout.showSettings, let plan = store.plan {
+        if settings.showUsage, !layout.showSettings, let usage = chats.liveUsage {
+            // Claude's own figure, the same one its usage ring shows.
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                HStack(spacing: 10) {
+                    Meter(label: usage.shortLabel, percent: usage.percent)
+                    Text(usage.shortLabel == usage.limit ? "" : usage.limit)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Palette.text3)
+                        .lineLimit(1)
+                    if let resets = usage.resets {
+                        Text("resets \(resets)")
+                            .font(.system(size: 10))
+                            .foregroundStyle(usage.percent >= 80 ? Palette.attention : Palette.text3)
+                            .lineLimit(1)
+                            .fixedSize()
+                    }
+                    Spacer(minLength: 4)
+                    Text(context.date.timeIntervalSince(usage.seenAt) < 90 ? "live" : "as of \(Format.ago(usage.seenAt, now: context.date)) ago")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Palette.text3)
+                        .fixedSize()
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 12)
+            .help("Read from the usage ring in Claude Desktop. It updates while a page showing that ring is open; otherwise this is the last reading.")
+        } else if settings.showUsage, !layout.showSettings, let plan = store.plan {
             TimelineView(.periodic(from: .now, by: 60)) { context in
                 HStack(spacing: 12) {
                     Meter(label: "5h", percent: plan.fiveHour)
@@ -862,6 +1016,8 @@ private struct SessionRowView: View {
     var pullRequests: [PullRequest] = []
     var showGit = true
     var showContext = true
+    /// One line: title, project, age. Used for idle sessions; the detail stays in the tooltip.
+    var compact = false
     let action: () -> Void
     var dismiss: () -> Void = {}
     @State private var hovering = false
@@ -902,14 +1058,63 @@ private struct SessionRowView: View {
         .padding(.top, 4)
     }
 
+    private var compactRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            StatusDot(state: row.state)
+                .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 }
+            Text(row.title)
+                .font(.system(size: 12))
+                .foregroundStyle(Palette.text2)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(1)
+            Text(row.project)
+                .font(.system(size: 10.5))
+                .foregroundStyle(Palette.text3)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                Text(Format.ago(row.lastActivity, now: context.date))
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Palette.text3)
+                    .monospacedDigit()
+                    .fixedSize()
+            }
+        }
+    }
+
     var body: some View {
+        Group {
+            if compact { compactRow } else { fullRow }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, compact ? 4 : 7)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(row.wantsYou
+                      ? accent.opacity(hovering ? 0.16 : 0.09)
+                      : (hovering ? Palette.raised : Color.clear))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(row.wantsYou ? accent.opacity(0.4) : Color.clear, lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .onTapGesture(perform: action)
+        .help(tooltip)
+        .contextMenu { rowMenu }
+    }
+
+    private var fullRow: some View {
         HStack(alignment: .top, spacing: 10) {
             StatusDot(state: row.state)
                 .padding(.top, 4)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(row.title)
-                        .font(.system(size: 12.5, weight: row.wantsYou ? .semibold : .medium))
+                        // Bold is reserved for rows whose next move is yours.
+                        .font(.system(size: 12.5, weight: row.wantsYou ? .semibold : .regular))
                         .foregroundStyle(row.state == .idle ? Palette.text2 : Palette.text)
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -949,23 +1154,9 @@ private struct SessionRowView: View {
                 }
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(row.wantsYou
-                      ? accent.opacity(hovering ? 0.16 : 0.09)
-                      : (hovering ? Palette.raised : Color.clear))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(row.wantsYou ? accent.opacity(0.4) : Color.clear, lineWidth: 1)
-        )
-        .contentShape(Rectangle())
-        .onHover { hovering = $0 }
-        .onTapGesture(perform: action)
-        .help(tooltip)
-        .contextMenu {
+    }
+
+    @ViewBuilder private var rowMenu: some View {
             if row.desktopId != nil { Button("Open in Claude", action: action) }
             if row.wantsYou { Button("Mark as seen", action: dismiss) }
             Button("Show project in Finder") {
@@ -977,7 +1168,6 @@ private struct SessionRowView: View {
                     NSPasteboard.general.setString(id, forType: .string)
                 }
             }
-        }
     }
 
     private var gitLine: some View {
@@ -1369,7 +1559,7 @@ private struct ArtifactRowView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(item.title)
                         .font(.system(size: 12, weight: waiting > 0 || item.newShareAt != nil ? .semibold : .regular))
-                        .foregroundStyle(waiting > 0 || item.newShareAt != nil || item.isActive ? Palette.text : Palette.text2)
+                        .foregroundStyle(waiting > 0 || item.newShareAt != nil ? Palette.text : Palette.text2)
                         .lineLimit(1)
                     Spacer(minLength: 4)
                     Text(trailing)

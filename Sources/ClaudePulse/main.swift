@@ -30,6 +30,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let i = CommandLine.arguments.firstIndex(of: "--usage-debug"), CommandLine.arguments.count > i + 1 {
+            let path = CommandLine.arguments[i + 1]
+            DispatchQueue.global().async { [chats] in
+                try? chats.debugUsageLabel().write(toFile: path, atomically: true, encoding: .utf8)
+                DispatchQueue.main.async { NSApp.terminate(nil) }
+            }
+            return
+        }
         // Diagnostic: post one notification, to check delivery and the icon, then quit.
         if CommandLine.arguments.contains("--notify-test") {
             let content = UNMutableNotificationContent()

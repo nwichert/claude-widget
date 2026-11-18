@@ -60,6 +60,21 @@ final class Settings: ObservableObject {
         didSet { defaults.set(notificationAccess, forKey: "notificationAccess") }
     }
 
+    /// Sections folded shut in the panel, by id. Reference sections start folded.
+    @Published var collapsedSections: [String] {
+        didSet { defaults.set(collapsedSections, forKey: "collapsedSections") }
+    }
+
+    func isCollapsed(_ id: String) -> Bool { collapsedSections.contains(id) }
+
+    func toggleCollapsed(_ id: String) {
+        if let index = collapsedSections.firstIndex(of: id) {
+            collapsedSections.remove(at: index)
+        } else {
+            collapsedSections.append(id)
+        }
+    }
+
     private let defaults = UserDefaults.standard
 
     private init() {
@@ -81,6 +96,7 @@ final class Settings: ObservableObject {
         showSkillIdeas = Self.bool(Key.showSkillIdeas, default: combined)
         showUsage = Self.bool(Key.showUsage, default: combined)
         showDuet = Self.bool(Key.showDuet, default: true)
+        collapsedSections = UserDefaults.standard.stringArray(forKey: "collapsedSections") ?? ["skills", "usage"]
         dismissedIdeas = UserDefaults.standard.stringArray(forKey: Key.dismissedIdeas) ?? []
         hiddenChats = UserDefaults.standard.stringArray(forKey: Key.hiddenChats) ?? []
     }
