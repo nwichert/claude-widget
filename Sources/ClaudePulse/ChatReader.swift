@@ -268,27 +268,107 @@ final class ChatReader: ObservableObject {
             }
             // Wait for the page and its Tasks pane to load, then press the matching task.
             guard let task else { return }
-            for attempt in 0..<30 {
-                let page = self.duetPage(root)
-                let pane = page.flatMap { self.find(in: $0, budget: 1_500, where: { e in
+            // Two ways to land on the task, tried together until one works:
+            //  - scroll the conversation to the latest message that mentions it (what you came for);
+            //  - press it in the Tasks pane, which opens the task's own thread beside the conversation.
+            // The Tasks pane can be hidden, so it is optional; if the conversation has no mention
+            // loaded either, the pane is opened as a last resort.
+            var pressedTask = false
+            var revealedPane = false
+            for attempt in 0..<34 {
+                guard let page = self.duetPage(root) else {
+                    Thread.sleep(forTimeInterval: 0.35)
+                    continue
+                }
+                let pane = self.find(in: page, budget: 2_500, where: { e in
                     self.attr(e, kAXSubroleAttribute) as? String == "AXLandmarkRegion" && self.label(e) == "Tasks"
-                }) }
-                let link = pane.flatMap { self.find(in: $0, budget: 1_200, where: { e in
+                })
+                if !pressedTask, let pane, let link = self.find(in: pane, budget: 1_200, where: { e in
                     self.attr(e, kAXRoleAttribute) as? String == "AXLink"
                         && self.staticTexts(in: e, depth: 0).first == task.title
-                }) }
-                if attempt % 5 == 0 || link != nil {
-                    trace?("try \(attempt): page \(page != nil) pane \(pane != nil) link \(link != nil)")
+                }) {
+                    pressedTask = AXUIElementPerformAction(link, kAXPressAction as CFString) == .success
+                    trace?("try \(attempt): opened the task in the Tasks pane: \(pressedTask)")
+                    Thread.sleep(forTimeInterval: 0.9)
                 }
-                if let link {
-                    let result = AXUIElementPerformAction(link, kAXPressAction as CFString)
-                    trace?("pressed: \(result.rawValue)")
-                    return
+                if self.scrollDiscussion(to: task, in: page, trace: trace) { return }
+                // Not in the stretch Duet has loaded: once the page has settled, go looking further back.
+                if attempt >= 6 {
+                    let found = self.scrollDiscussion(to: task, in: page, loadEarlier: true, trace: trace)
+                    if found || pressedTask { return }
+                }
+                if !revealedPane, pane == nil, attempt >= 10,
+                   let button = self.find(in: page, budget: 400, where: { e in
+                       self.attr(e, kAXRoleAttribute) as? String == "AXButton" && self.label(e).hasPrefix("Tasks")
+                   }) {
+                    revealedPane = AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+                    trace?("try \(attempt): showed the Tasks pane: \(revealedPane)")
                 }
                 Thread.sleep(forTimeInterval: 0.35)
             }
             trace?("gave up")
         }
+    }
+
+    /// Scrolls Duet's conversation to the most recent message that mentions the task.
+    ///
+    /// Duet keeps only the latest stretch of the conversation loaded. With `loadEarlier`, a task
+    /// that has scrolled out of that stretch is hunted for by jumping to the oldest loaded message,
+    /// which makes Duet fetch the ones before it, and looking again, until it turns up or Duet
+    /// stops producing older messages.
+    @discardableResult
+    private func scrollDiscussion(to task: DuetTask, in page: AXUIElement, loadEarlier: Bool = false,
+                                  trace: ((String) -> Void)?) -> Bool {
+        func scan() -> (mentions: [AXUIElement], articles: [AXUIElement]) {
+            var mentions: [AXUIElement] = []
+            var articles: [AXUIElement] = []
+            var visited = 0
+            func walk(_ e: AXUIElement, _ depth: Int) {
+                visited += 1
+                guard visited < 6_000, depth < 60 else { return }
+                let subrole = attr(e, kAXSubroleAttribute) as? String
+                // The Tasks pane lists the same title; only the conversation counts here.
+                if subrole == "AXLandmarkRegion", label(e) == "Tasks" { return }
+                if subrole == "AXDocumentArticle" { articles.append(e) }
+                if attr(e, kAXRoleAttribute) as? String == "AXLink", label(e).contains(task.title) {
+                    mentions.append(e)
+                    return
+                }
+                for child in children(e) { walk(child, depth + 1) }
+            }
+            walk(page, 0)
+            return (mentions, articles)
+        }
+        func y(_ e: AXUIElement) -> Int {
+            var point = CGPoint.zero
+            if let value = attr(e, kAXPositionAttribute), CFGetTypeID(value) == AXValueGetTypeID() {
+                AXValueGetValue(value as! AXValue, .cgPoint, &point)
+            }
+            return Int(point.y)
+        }
+
+        var stalled = 0
+        var lastCount = -1
+        for round in 0..<(loadEarlier ? 40 : 1) {
+            let found = scan()
+            if let target = found.mentions.last {
+                let before = y(target)
+                let result = AXUIElementPerformAction(target, "AXScrollToVisible" as CFString)
+                Thread.sleep(forTimeInterval: 0.5)
+                trace?("round \(round): found \(found.mentions.count) mention(s) among \(found.articles.count) messages; scrolled \(result.rawValue), y \(before) -> \(y(target))")
+                return result == .success
+            }
+            guard loadEarlier, let oldest = found.articles.first else { return false }
+            stalled = found.articles.count == lastCount ? stalled + 1 : 0
+            lastCount = found.articles.count
+            if stalled >= 4 {
+                trace?("round \(round): no older messages are loading (\(found.articles.count) loaded); not found")
+                return false
+            }
+            AXUIElementPerformAction(oldest, "AXScrollToVisible" as CFString)
+            Thread.sleep(forTimeInterval: 0.6)
+        }
+        return false
     }
 
     private func duetPage(_ root: AXUIElement) -> AXUIElement? {
