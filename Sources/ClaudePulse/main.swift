@@ -65,6 +65,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             DispatchQueue.main.asyncAfter(deadline: .now() + 16) { NSApp.terminate(nil) }
             return
         }
+        if let i = CommandLine.arguments.firstIndex(of: "--duet-show-test"), CommandLine.arguments.count > i + 1 {
+            let path = CommandLine.arguments[i + 1]
+            var lines: [String] = []
+            chats.debugShowInMainChannel { line in
+                lines.append(line)
+                try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 22) { NSApp.terminate(nil) }
+            return
+        }
         // Diagnostic: click the first remembered Duet task the way a row click does, then quit.
         if CommandLine.arguments.contains("--open-duet-first") {
             let path = CommandLine.arguments.last ?? "/dev/null"

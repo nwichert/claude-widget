@@ -447,7 +447,11 @@ final class ChatReader: ObservableObject {
             trace?("duet already open: \(alreadyOpen)")
             if !alreadyOpen { self.navigateToDuet(root, trace: trace) }
             guard let task else { return }
-            // Two ways to land on the task, tried together until one works:
+            // First choice: Duet's own "Show in main channel", from the task's More menu. Duet knows
+            // which message the task belongs to, so nothing has to be searched for.
+            if self.showInMainChannel(task, root: root, trace: trace) { return }
+            trace?("falling back to searching the conversation")
+            // Fallback. Two ways to land on the task, tried together until one works:
             //  - scroll the conversation to the latest message that mentions it (what you came for);
             //  - press it in the Tasks pane, which opens the task's own thread beside the conversation.
             // The Tasks pane can be hidden, so it is optional; if the conversation has no mention
@@ -487,6 +491,113 @@ final class ChatReader: ObservableObject {
             }
             trace?("gave up")
         }
+    }
+
+    /// Diagnostic: tries "Show in main channel" on the first task under Duet's Resolved tab, which
+    /// changes nothing in Duet, then puts the Tasks pane back on Active.
+    func debugShowInMainChannel(trace: @escaping (String) -> Void) {
+        queue.async { [weak self] in
+            guard let self, let root = self.claudeRoot() else { trace("no Claude window"); return }
+            if self.duetPage(root) == nil { self.navigateToDuet(root, trace: trace) }
+            func pane() -> AXUIElement? {
+                guard let page = self.duetPage(root) else { return nil }
+                return self.find(in: page, budget: 2_500, where: { e in
+                    self.attr(e, kAXSubroleAttribute) as? String == "AXLandmarkRegion" && self.label(e) == "Tasks"
+                })
+            }
+            func tab(_ name: String) -> AXUIElement? {
+                pane().flatMap { self.find(in: $0, budget: 300, where: { e in
+                    self.attr(e, kAXRoleAttribute) as? String == "AXRadioButton"
+                        && (self.label(e) == name || self.staticTexts(in: e, depth: 0).first == name)
+                }) }
+            }
+            var title: String?
+            for _ in 0..<20 where title == nil {
+                Thread.sleep(forTimeInterval: 0.4)
+                guard let resolved = tab("Resolved") else { continue }
+                AXUIElementPerformAction(resolved, kAXPressAction as CFString)
+                Thread.sleep(forTimeInterval: 0.8)
+                if let p = pane(), let more = self.find(in: p, budget: 1_500, where: { e in
+                    self.attr(e, kAXRoleAttribute) as? String == "AXPopUpButton" && self.label(e).hasPrefix("More for ")
+                }) {
+                    title = String(self.label(more).dropFirst("More for ".count))
+                }
+            }
+            guard let title else { trace("no resolved task found to test with"); return }
+            trace("testing with a resolved task (title length \(title.count))")
+            let task = DuetTask(title: title, status: "Resolved", summary: nil, url: nil)
+            let ok = self.showInMainChannel(task, root: root, trace: trace)
+            Thread.sleep(forTimeInterval: 1.2)
+            if let page = self.duetPage(root) {
+                let found = self.scrollDiscussion(to: task, in: page, trace: nil)
+                trace("show in main channel pressed: \(ok); a message mentioning the task is loaded afterwards: \(found)")
+            }
+            if let active = tab("Active") { AXUIElementPerformAction(active, kAXPressAction as CFString); trace("Tasks pane back on Active") }
+        }
+    }
+
+    /// Opens the task's "More" menu in the Tasks pane and chooses "Show in main channel".
+    /// Returns false if the pane, the task or that menu item cannot be found, leaving any menu closed.
+    private func showInMainChannel(_ task: DuetTask, root: AXUIElement, trace: ((String) -> Void)?) -> Bool {
+        var revealedPane = false
+        for attempt in 0..<22 {
+            Thread.sleep(forTimeInterval: 0.35)
+            guard let page = duetPage(root) else { continue }
+            guard let pane = find(in: page, budget: 2_500, where: { e in
+                self.attr(e, kAXSubroleAttribute) as? String == "AXLandmarkRegion" && self.label(e) == "Tasks"
+            }) else {
+                if !revealedPane, attempt >= 4, let button = find(in: page, budget: 400, where: { e in
+                    self.attr(e, kAXRoleAttribute) as? String == "AXButton" && self.label(e).hasPrefix("Tasks")
+                }) {
+                    revealedPane = AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+                    trace?("showed the Tasks pane: \(revealedPane)")
+                }
+                continue
+            }
+            guard let more = find(in: pane, budget: 1_500, where: { e in
+                self.attr(e, kAXRoleAttribute) as? String == "AXPopUpButton" && self.label(e) == "More for \(task.title)"
+            }) else {
+                // Another task's detail may be filling the pane; step back to the list.
+                if let back = find(in: pane, budget: 200, where: { e in
+                    self.attr(e, kAXRoleAttribute) as? String == "AXButton" && self.label(e) == "Back"
+                }) {
+                    AXUIElementPerformAction(back, kAXPressAction as CFString)
+                    trace?("left a task detail to reach the list")
+                }
+                continue
+            }
+            AXUIElementPerformAction(more, kAXPressAction as CFString)
+            Thread.sleep(forTimeInterval: 0.7)
+            let items = menuItems(root)
+            if let item = items.first(where: { $0.0.lowercased().contains("main channel") }) {
+                let result = AXUIElementPerformAction(item.1, kAXPressAction as CFString)
+                trace?("chose '\(item.0)': \(result.rawValue)")
+                return result == .success
+            }
+            trace?("no 'Show in main channel' in the menu: \(items.map(\.0))")
+            AXUIElementPerformAction(more, kAXPressAction as CFString)  // close the menu again
+            return false
+        }
+        trace?("could not reach the task's menu")
+        return false
+    }
+
+    /// Every item of whatever menu is open in Claude's window.
+    private func menuItems(_ root: AXUIElement) -> [(String, AXUIElement)] {
+        var items: [(String, AXUIElement)] = []
+        var seen = 0
+        func collect(_ e: AXUIElement, _ depth: Int) {
+            seen += 1
+            guard seen < 5_000, depth < 60 else { return }
+            let role = attr(e, kAXRoleAttribute) as? String ?? ""
+            if role == "AXMenuItem" || role == "AXMenuItemCheckbox" || role == "AXMenuItemRadio" {
+                items.append((label(e), e))
+                return
+            }
+            for child in children(e) { collect(child, depth + 1) }
+        }
+        for window in (attr(root, kAXWindowsAttribute) as? [AXUIElement]) ?? [] { collect(window, 0) }
+        return items
     }
 
     /// Scrolls Duet's conversation to the most recent message that mentions the task.
