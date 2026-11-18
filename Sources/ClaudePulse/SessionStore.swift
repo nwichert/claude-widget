@@ -191,14 +191,22 @@ final class SessionStore: ObservableObject {
                         let number = (p["prNumber"] as? String) ?? (p["prNumber"] as? NSNumber)?.stringValue ?? ""
                         return PRInfo(number: number, state: (p["state"] as? String) ?? "", url: url)
                     })
-                // Only trust the verdict if it is about the latest message.
+                // Claude Desktop's after-turn verdict. Only trust it if it is about the latest message.
                 if let summary = d["postTurnSummary"] as? [String: Any] {
-                    let about = summary["summarizes_uuid"] as? String
+                    let about = (d["postTurnSummaryFor"] as? String) ?? (summary["summarizes_uuid"] as? String)
                     let latest = d["lastAssistantUuid"] as? String
                     if about == nil || latest == nil || about == latest {
                         record?.summaryCategory = summary["status_category"] as? String
-                        record?.needsAction = summary["needs_action"] as? String
+                        record?.needsAction = (summary["needs_action"] as? String)?.nonEmpty
                     }
+                }
+                // The question Claude left in its end-of-turn box. This is the main "asked you something"
+                // signal: it is set when a turn closes with a question and cleared when the next turn starts.
+                if let wrapUp = d["turnWrapUp"] as? [String: Any], let ask = wrapUp["needsUser"] as? String {
+                    let failed = record?.summaryCategory == "failed"
+                    let earlier = record?.needsAction
+                    record?.summaryCategory = failed ? "failed" : "blocked"
+                    record?.needsAction = ask.nonEmpty ?? earlier
                 }
             }
             desktopCache[path] = (mtime, record)
@@ -268,17 +276,26 @@ final class SessionStore: ObservableObject {
             let badgeWaiting = badge.map { $0.contains("await") || $0.contains("approval") || $0.contains("input") } ?? false
             let blocked = l?.status == "waiting" || l?.waitingFor != nil || badgeWaiting
 
+            // Claude Desktop's verdict on the finished turn: it asked you something, got stuck, or failed.
+            let openQuestion = ["blocked", "need_input", "failed"].contains(d.summaryCategory ?? "")
+                || d.needsAction != nil
+                || totals.openAsk != nil
+
             var state = SessionState.idle
             var prompt: String?
             if blocked {
+                // An open question is a fact about the session, not news, so it shows even while you
+                // are looking at that session. Only the banner notification is held back then.
                 pending[d.sessionId] = nil
-                if !visible {
-                    state = .needsInput
-                    prompt = l?.waitingFor == "dialog open" ? "Approval needed" : nil
-                }
+                state = .needsInput
+                prompt = l?.waitingFor == "dialog open" ? "Approval needed" : nil
             } else if l?.status == "busy" {
                 pending[d.sessionId] = nil
                 state = .working
+            } else if openQuestion {
+                pending[d.sessionId] = nil
+                state = .needsInput
+                prompt = totals.openAsk ?? d.needsAction ?? (d.summaryCategory == "failed" ? "The last turn failed" : nil)
             } else if visible {
                 pending[d.sessionId] = nil  // you are looking at it now
             } else {
@@ -288,12 +305,8 @@ final class SessionStore: ObservableObject {
                 }
                 let unread = d.lastTurnEdge.map { $0.timeIntervalSince(d.lastFocused ?? .distantPast) > 1 } ?? false
                 if pending[d.sessionId] != nil || unread {
-                    // Finished. Orange if the turn ended by asking you something, green otherwise.
-                    let flagged = d.summaryCategory.map { $0 != "completed" } ?? false
-                    let action = d.needsAction?.nonEmpty
-                    let asked = flagged || action != nil || totals.endsWithQuestion
-                    state = asked ? .needsInput : .needsYou
-                    prompt = action
+                    // Finished without a recorded question. A closing "?" still earns orange.
+                    state = totals.endsWithQuestion ? .needsInput : .needsYou
                 }
             }
             prByRow[d.sessionId] = d.pr
@@ -388,7 +401,14 @@ final class SessionStore: ObservableObject {
 
         let plan = readPlan()
         DispatchQueue.main.async {
-            if self.rows != built { self.rows = built }
+            if self.rows != built {
+                self.rows = built
+                // A plain record of what the panel is showing, for checking detection from outside.
+                let names = ["needsInput", "done", "working", "idle"]
+                UserDefaults.standard.set(
+                    Dictionary(built.map { ($0.title, names[$0.state.rawValue]) }, uniquingKeysWith: { a, _ in a }),
+                    forKey: "debugStates")
+            }
             if self.plan != plan { self.plan = plan }
             finished.forEach { self.onFinished?($0) }
             overdue.forEach { self.onReminder?($0) }

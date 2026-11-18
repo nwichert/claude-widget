@@ -45,6 +45,7 @@ struct PanelView: View {
     @ObservedObject var chats: ChatReader
     @ObservedObject var artifacts: ArtifactStore
     @ObservedObject var github: GitHubReader
+    @ObservedObject var insights: InsightsStore
     @ObservedObject private var settings = Settings.shared
     var open: (SessionRow) -> Void
 
@@ -178,6 +179,82 @@ struct PanelView: View {
         if settings.showGitHub, !github.pullRequests.isEmpty { pullRequestSection }
         if settings.showArtifacts, !artifacts.items.isEmpty { artifactSection }
         if settings.showChats { chatSection }
+        if settings.showInsights, let data = insights.insights { insightsSection(data) }
+    }
+
+    @ViewBuilder private func insightsSection(_ data: Insights) -> some View {
+        let total = max(1, data.projects.reduce(0) { $0 + $1.outputTokens })
+        let top = Array(data.projects.prefix(4))
+        let ideas = (data.skillIdeas ?? []).filter { !settings.dismissedIdeas.contains($0.name) }
+        VStack(alignment: .leading, spacing: 1) {
+            sectionHeader("YOUR USAGE · LAST \(data.windowDays) DAYS") {
+                Spacer()
+                if let at = data.updatedAt {
+                    TimelineView(.periodic(from: .now, by: 60)) { context in
+                        Text(context.date.timeIntervalSince(at) < 60 ? "just updated" : "as of \(Format.ago(at, now: context.date)) ago")
+                            .font(.system(size: 10))
+                    }
+                    .help("Counts are exact, read from your local transcripts. What the work was for, and the skill ideas, are a Claude session's reading of your prompts.")
+                }
+            }
+            VStack(alignment: .leading, spacing: 7) {
+                Text("\(data.totals.sessions) sessions · \(data.totals.prompts) prompts · \(Format.tokens(data.totals.outputTokens)) tokens written")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Palette.text2)
+                    .monospacedDigit()
+
+                // Share of Claude's output by project, biggest first; lighter means smaller.
+                GeometryReader { geo in
+                    HStack(spacing: 2) {
+                        ForEach(Array(data.projects.enumerated()), id: \.element.id) { index, project in
+                            RoundedRectangle(cornerRadius: 1.5)
+                                .fill(Palette.text.opacity(Self.shade(index)))
+                                .frame(width: max(2, (geo.size.width - CGFloat(data.projects.count - 1) * 2)
+                                                  * CGFloat(project.outputTokens) / CGFloat(total)))
+                        }
+                    }
+                }
+                .frame(height: 5)
+
+                HStack(spacing: 10) {
+                    ForEach(Array(top.enumerated()), id: \.element.id) { index, project in
+                        HStack(spacing: 4) {
+                            RoundedRectangle(cornerRadius: 1.5)
+                                .fill(Palette.text.opacity(Self.shade(index)))
+                                .frame(width: 7, height: 7)
+                            Text("\(project.name) \(Int((Double(project.outputTokens) / Double(total) * 100).rounded()))%")
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 10.5))
+                .foregroundStyle(Palette.text3)
+                .monospacedDigit()
+
+                if let activities = data.activities, !activities.isEmpty {
+                    Text("Mostly: " + activities.prefix(3).map { "\($0.label.lowercased()) ~\($0.share)%" }.joined(separator: " · "))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Palette.text3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .help(activities.map { "\($0.label): about \($0.share)%" }.joined(separator: "\n") + "\n\nEstimated from your prompts.")
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 4)
+
+            if !ideas.isEmpty {
+                sectionHeader("SKILLS WORTH CREATING") { Spacer() }
+                ForEach(ideas) { idea in
+                    SkillIdeaRowView(idea: idea) { settings.dismissedIdeas.append(idea.name) }
+                }
+            }
+        }
+        .padding(.horizontal, 6)
+    }
+
+    private static func shade(_ index: Int) -> Double {
+        [0.85, 0.55, 0.36, 0.24][min(index, 3)]
     }
 
     private func pullRequests(for row: SessionRow) -> [PullRequest] {
@@ -829,6 +906,72 @@ private struct PulseHalo: NSViewRepresentable {
     func updateNSView(_ nsView: HaloView, context: Context) {}
 }
 
+private struct SkillIdeaRowView: View {
+    let idea: Insights.SkillIdea
+    let dismiss: () -> Void
+    @State private var hovering = false
+    @State private var started = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: started ? "checkmark" : "lightbulb")
+                .font(.system(size: 9.5))
+                .foregroundStyle(started ? Palette.done : Palette.attention)
+                .frame(width: 12)
+                .padding(.top, 3)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(idea.name)
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Palette.text)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    if hovering {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8.5, weight: .bold))
+                            .foregroundStyle(Palette.text2)
+                            .frame(width: 16, height: 14)
+                            .contentShape(Rectangle())
+                            .onTapGesture(perform: dismiss)
+                            .help("Not interested")
+                    } else if let seen = idea.seen {
+                        Text("asked ~\(seen)×")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Palette.text3)
+                            .monospacedDigit()
+                            .fixedSize()
+                    }
+                }
+                Text(started ? "Prompt copied. Paste it into the new session if it is not already there." : idea.why)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(started ? Palette.done : Palette.text3)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(hovering ? Palette.raised : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .onTapGesture(perform: start)
+        .help("Start a new Code session that builds this skill. The request is also copied to the clipboard.\n\n" + idea.prompt)
+    }
+
+    /// Copies the request, then opens a new Code session with it filled in where Claude allows.
+    private func start() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(idea.prompt, forType: .string)
+        var link = URLComponents(string: "claude://code/new")
+        link?.queryItems = [URLQueryItem(name: "q", value: idea.prompt)]
+        if let url = link?.url { NSWorkspace.shared.open(url) }
+        started = true
+    }
+}
+
 private struct PullRequestRowView: View {
     let pr: PullRequest
     @State private var hovering = false
@@ -1026,6 +1169,7 @@ private struct SettingsView: View {
             section("Show in the panel") {
                 toggle("Artifacts and comments", $settings.showArtifacts)
                 toggle("Recent chats", $settings.showChats)
+                toggle("Usage and skill ideas", $settings.showInsights)
                 toggle("Plan usage footer", $settings.showPlan)
                 choice("Keep idle sessions for", $settings.recentHours,
                        [(6, "6h"), (24, "1d"), (72, "3d"), (168, "7d")])

@@ -16,6 +16,8 @@ final class Settings: ObservableObject {
         static let hiddenChats = "hiddenChats"
         static let showArtifacts = "showArtifacts"
         static let showGitHub = "showGitHub"
+        static let showInsights = "showInsights"
+        static let dismissedIdeas = "dismissedIdeas"
     }
 
     @Published var notifyOnFinish: Bool { didSet { defaults.set(notifyOnFinish, forKey: Key.notify) } }
@@ -29,6 +31,9 @@ final class Settings: ObservableObject {
 
     @Published var showChats: Bool { didSet { defaults.set(showChats, forKey: Key.showChats) } }
 
+    @Published var showInsights: Bool { didSet { defaults.set(showInsights, forKey: Key.showInsights) } }
+    /// Skill ideas you have said no to, by name.
+    @Published var dismissedIdeas: [String] { didSet { defaults.set(dismissedIdeas, forKey: Key.dismissedIdeas) } }
     @Published var showGitHub: Bool { didSet { defaults.set(showGitHub, forKey: Key.showGitHub) } }
     @Published var showArtifacts: Bool { didSet { defaults.set(showArtifacts, forKey: Key.showArtifacts) } }
     /// Chat titles kept out of the panel. Claude exposes no chat id locally, so the title is the key:
@@ -53,6 +58,8 @@ final class Settings: ObservableObject {
         showChats = Self.bool(Key.showChats, default: true)
         showArtifacts = Self.bool(Key.showArtifacts, default: true)
         showGitHub = Self.bool(Key.showGitHub, default: true)
+        showInsights = Self.bool(Key.showInsights, default: true)
+        dismissedIdeas = UserDefaults.standard.stringArray(forKey: Key.dismissedIdeas) ?? []
         hiddenChats = UserDefaults.standard.stringArray(forKey: Key.hiddenChats) ?? []
     }
 

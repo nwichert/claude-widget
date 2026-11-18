@@ -18,6 +18,9 @@ final class TokenTally {
     private let projectsDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".claude/projects").path
     private let needle = Data("\"usage\"".utf8)
+    private let userLine = Data("\"type\":\"user\"".utf8)
+    private let toolResult = Data("\"tool_result\"".utf8)
+    private let sidechain = Data("\"isSidechain\":true".utf8)
 
     func totals(forSession sessionId: String) -> TokenTotals {
         guard let path = locate(sessionId) else { return TokenTotals() }
@@ -57,8 +60,16 @@ final class TokenTally {
             // Only consume whole lines; a partial trailing line is picked up next pass.
             let complete = chunk[chunk.startIndex...lastNewline]
             state.offset += UInt64(complete.count)
-            for line in complete.split(separator: 0x0A) where line.range(of: needle) != nil {
-                absorb(line, into: &state)
+            for line in complete.split(separator: 0x0A) {
+                if line.range(of: needle) != nil {
+                    absorb(line, into: &state)
+                } else if line.range(of: userLine) != nil,
+                          line.range(of: toolResult) == nil,
+                          line.range(of: sidechain) == nil {
+                    // Something new was sent to the session, so any question it had left is answered.
+                    // Checked on raw bytes: these lines can be megabytes and are not worth parsing.
+                    state.totals.openAsk = nil
+                }
             }
         } catch {
             // Leave state as it was; try again next pass.
@@ -96,6 +107,21 @@ final class TokenTally {
                .last(where: { $0["type"] as? String == "text" })?["text"] as? String {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty { state.totals.endsWithQuestion = trimmed.hasSuffix("?") }
+        }
+        // Claude closes a turn by calling its wrap-up tool; an `ask` there is the question it shows
+        // you. Claude Desktop only saves that to its own record when the turn is marked blocked,
+        // so the transcript is the one place every closing question can be found.
+        if (obj["isSidechain"] as? Bool) != true {
+            for block in (message["content"] as? [[String: Any]]) ?? [] where block["type"] as? String == "tool_use" {
+                let name = (block["name"] as? String) ?? ""
+                if name.hasSuffix("wrap_up") {
+                    let ask = ((block["input"] as? [String: Any])?["ask"] as? String)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    state.totals.openAsk = (ask?.isEmpty == false) ? ask : nil
+                } else {
+                    state.totals.openAsk = nil  // working again
+                }
+            }
         }
         if (obj["isSidechain"] as? Bool) != true, u.context > 0 {
             state.totals.context = u.context

@@ -22,6 +22,8 @@ struct TokenTotals: Equatable {
     var cacheRead = 0
     /// Whether Claude's latest message on the main thread ends in a question mark.
     var endsWithQuestion = false
+    /// The question Claude left in its end-of-turn box, while nobody has answered it.
+    var openAsk: String?
 }
 
 struct SessionRow: Identifiable, Equatable {

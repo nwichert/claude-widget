@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let chats = ChatReader()
     private let artifacts = ArtifactStore()
     private let github = GitHubReader()
+    private let insights = InsightsStore()
     private var panel: PanelController!
     private var statusItem: NSStatusItem!
     private var cancellables = Set<AnyCancellable>()
@@ -57,7 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return
         }
 
-        panel = PanelController(store: store, chats: chats, artifacts: artifacts, github: github) { [weak self] row in self?.open(row) }
+        panel = PanelController(store: store, chats: chats, artifacts: artifacts, github: github, insights: insights) { [weak self] row in self?.open(row) }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
@@ -94,6 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         artifacts.onNewMentions = { [weak self] item in self?.notifyMention(item) }
         artifacts.start()
         github.start()
+        insights.start()
 
         // `ClaudePulse --snapshot out.png` renders the panel to a file and quits (for checking layout).
         if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), CommandLine.arguments.count > i + 1 {
