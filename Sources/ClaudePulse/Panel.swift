@@ -166,6 +166,13 @@ final class PanelController: NSObject, NSWindowDelegate {
         layout.manualHeight = true  // let the content follow the drag
     }
 
+    /// Keeps the text scale in step with the drag, not only its end.
+    func windowDidResize(_ notification: Notification) {
+        guard liveResizing, !layout.minimized else { return }
+        let width = panel.frame.width
+        if abs(layout.width - width) > 0.5 { layout.width = width }
+    }
+
     func windowDidEndLiveResize(_ notification: Notification) {
         guard !layout.minimized else { return }
         liveResizing = false

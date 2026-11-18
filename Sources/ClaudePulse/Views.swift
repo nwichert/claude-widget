@@ -19,6 +19,20 @@ enum Palette {
     static let idle = Color(red: 0.612, green: 0.604, blue: 0.573).opacity(0.7)
 }
 
+/// How much larger than standard the panel's text is drawn. Set once at the top of the panel
+/// and read by every row, so fonts are laid out and drawn at their real size (magnifying a
+/// finished panel instead looks soft on screen).
+private struct UIScaleKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 1
+}
+
+extension EnvironmentValues {
+    var uiScale: CGFloat {
+        get { self[UIScaleKey.self] }
+        set { self[UIScaleKey.self] = newValue }
+    }
+}
+
 /// Size state shared between the window and the view. The panel hugs its rows until you
 /// drag it to a height of your own; from then on the list scrolls inside the size you chose.
 final class PanelLayout: ObservableObject {
@@ -59,20 +73,20 @@ struct PanelView: View {
         let access = settings.notificationAccess
         if settings.notifyOnFinish, ["denied", "notDetermined", "bannersOff"].contains(access) {
             HStack(alignment: .top, spacing: 7) {
-                Image(systemName: "bell.slash.fill").font(.system(size: 10.5)).padding(.top, 2)
+                Image(systemName: "bell.slash.fill").font(.system(size: 10.5 * scale)).padding(.top, 2 * scale)
                 Text(access == "bannersOff"
                      ? "macOS has banners turned off for Claude Pulse, so nothing will pop up. Click to open Notification settings."
                      : "macOS is not allowing Claude Pulse notifications, so you will not be alerted. Click to open Notification settings.")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 11 * scale, weight: .medium))
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
             .foregroundStyle(Palette.background)
             .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .padding(.vertical, 7 * scale)
             .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Palette.attention))
             .padding(.horizontal, 10)
-            .padding(.bottom, 8)
+            .padding(.bottom, 8 * scale)
             .contentShape(Rectangle())
             .onTapGesture {
                 Self.openLink("x-apple.systempreferences:com.apple.Notifications-Settings.extension")
@@ -110,13 +124,25 @@ struct PanelView: View {
                alignment: .top)
     }
 
+    /// How much text is enlarged at the current width. Grows more slowly than the panel does,
+    /// so a wider panel gives you both larger text and more room for it.
+    private var zoom: CGFloat {
+        guard settings.scaleText else { return 1 }
+        let ratio = max(1, layout.width / PanelLayout.defaultWidth)
+        // Steps of 5% keep type on sensible sizes while dragging.
+        return (min(1.5, pow(ratio, 0.55)) * 20).rounded() / 20
+    }
+
+    /// The panel's own headers and links use the same scale as the rows.
+    private var scale: CGFloat { zoom }
+
     var body: some View {
         Group {
             if layout.minimized {
                 TickerView(headlines: headlines) { layout.minimized = false }
                     .frame(width: PanelLayout.compactSize.width, height: PanelLayout.compactSize.height)
             } else {
-                expanded
+                expanded.environment(\.uiScale, zoom)
             }
         }
         .background(Palette.background)
@@ -300,23 +326,23 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
                 Text("NEEDS YOU")
-                    .font(.system(size: 10.5, weight: .semibold))
+                    .font(.system(size: 10.5 * scale, weight: .semibold))
                     .kerning(0.8)
                     .foregroundStyle(count > 0 ? Palette.text : Palette.text3)
                 if count > 0 {
                     Text("\(count)")
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(.system(size: 10.5 * scale, weight: .semibold))
                         .foregroundStyle(Palette.attention)
                         .monospacedDigit()
                 } else {
                     Text("· nothing right now")
-                        .font(.system(size: 10.5))
+                        .font(.system(size: 10.5 * scale))
                         .foregroundStyle(Palette.text3)
                 }
                 Spacer()
             }
             .padding(.horizontal, 10)
-            .padding(.top, 2)
+            .padding(.top, 2 * scale)
             .padding(.bottom, count > 0 ? 5 : 0)
 
             ForEach(sessions) { row in sessionRow(row) }
@@ -368,7 +394,7 @@ struct PanelView: View {
                 if let at = data.updatedAt {
                     TimelineView(.periodic(from: .now, by: 60)) { context in
                         Text(context.date.timeIntervalSince(at) < 60 ? "just updated" : "as of \(Format.ago(at, now: context.date)) ago")
-                            .font(.system(size: 10))
+                            .font(.system(size: 10 * scale))
                     }
                     .help("Counts are exact, read from your local transcripts. What the work was for, and the skill ideas, are a Claude session's reading of your prompts.")
                 }
@@ -376,7 +402,7 @@ struct PanelView: View {
             if !settings.isCollapsed("usage") {
             VStack(alignment: .leading, spacing: 7) {
                 Text("\(data.totals.sessions) sessions · \(data.totals.prompts) prompts · \(Format.tokens(data.totals.outputTokens)) tokens written")
-                    .font(.system(size: 11.5))
+                    .font(.system(size: 11.5 * scale))
                     .foregroundStyle(Palette.text2)
                     .monospacedDigit()
 
@@ -406,20 +432,20 @@ struct PanelView: View {
                     }
                     Spacer(minLength: 0)
                 }
-                .font(.system(size: 10.5))
+                .font(.system(size: 10.5 * scale))
                 .foregroundStyle(Palette.text2)
                 .monospacedDigit()
 
                 if let activities = data.activities, !activities.isEmpty {
                     Text("Mostly: " + activities.prefix(3).map { "\($0.label.lowercased()) ~\($0.share)%" }.joined(separator: " · "))
-                        .font(.system(size: 10.5))
+                        .font(.system(size: 10.5 * scale))
                         .foregroundStyle(Palette.text3)
                         .fixedSize(horizontal: false, vertical: true)
                         .help(activities.map { "\($0.label): about \($0.share)%" }.joined(separator: "\n") + "\n\nEstimated from your prompts.")
                 }
             }
             .padding(.horizontal, 10)
-            .padding(.bottom, 4)
+            .padding(.bottom, 4 * scale)
             }
         }
         .padding(.horizontal, 6)
@@ -460,27 +486,27 @@ struct PanelView: View {
         HStack(spacing: 6) {
             if let id {
                 Image(systemName: settings.isCollapsed(id) ? "chevron.right" : "chevron.down")
-                    .font(.system(size: 7.5, weight: .bold))
+                    .font(.system(size: 7.5 * scale, weight: .bold))
                     .frame(width: 8)
             }
             Text(title)
-                .font(.system(size: 10.5, weight: .semibold))
+                .font(.system(size: 10.5 * scale, weight: .semibold))
                 .kerning(0.8)
                 .foregroundStyle(Palette.text2)
             if let count {
                 Text("\(count)")
-                    .font(.system(size: 10.5, weight: .medium))
+                    .font(.system(size: 10.5 * scale, weight: .medium))
                     .monospacedDigit()
             }
             trailing()
         }
         .foregroundStyle(Palette.text3)
         .padding(.horizontal, 10)
-        .padding(.top, 15)
-        .padding(.bottom, 5)
+        .padding(.top, 15 * scale)
+        .padding(.bottom, 5 * scale)
         // A hairline above each section gives the eye something to land on when scanning.
         .overlay(alignment: .top) {
-            Rectangle().fill(Palette.border).frame(height: 1).padding(.horizontal, 10).padding(.top, 7)
+            Rectangle().fill(Palette.border).frame(height: 1).padding(.horizontal, 10).padding(.top, 7 * scale)
         }
         .contentShape(Rectangle())
         .onTapGesture { if let id { settings.toggleCollapsed(id) } }
@@ -506,7 +532,7 @@ struct PanelView: View {
             sectionHeader("DUET TASKS", id: "duet", count: rest.isEmpty ? nil : rest.count) {
                 // The header is a way into Duet whether or not there are tasks.
                 Image(systemName: "arrow.up.right")
-                    .font(.system(size: 8, weight: .semibold))
+                    .font(.system(size: 8 * scale, weight: .semibold))
                     .frame(width: 14, height: 12)
                     .contentShape(Rectangle())
                     .onTapGesture { chats.openDuet(nil) }
@@ -515,7 +541,7 @@ struct PanelView: View {
                 if let seen = chats.duetSeenAt {
                     TimelineView(.periodic(from: .now, by: 30)) { context in
                         Text(context.date.timeIntervalSince(seen) < 60 ? "live" : "as of \(Format.ago(seen, now: context.date)) ago")
-                            .font(.system(size: 10))
+                            .font(.system(size: 10 * scale))
                     }
                     .help("Duet's tasks can only be read while Duet is open in the Claude app. Otherwise this is the last list seen.")
                 }
@@ -548,7 +574,7 @@ struct PanelView: View {
                 Spacer()
                 if let at = artifacts.updatedAt {
                     TimelineView(.periodic(from: .now, by: 60)) { context in
-                        Text(context.date.timeIntervalSince(at) < 60 ? "just updated" : "as of \(Format.ago(at, now: context.date)) ago").font(.system(size: 10))
+                        Text(context.date.timeIntervalSince(at) < 60 ? "just updated" : "as of \(Format.ago(at, now: context.date)) ago").font(.system(size: 10 * scale))
                     }
                     .help("Artifacts and comments come from a snapshot a Claude session writes. They are not live.")
                 }
@@ -573,7 +599,7 @@ struct PanelView: View {
             sectionHeader("CHATS", id: "chats", count: available.count) {
                 if !hidden.isEmpty {
                     Text("· \(hidden.count) hidden")
-                        .font(.system(size: 10))
+                        .font(.system(size: 10 * scale))
                         .underline()
                         .contentShape(Rectangle())
                         .onTapGesture { layout.showSettings = true }
@@ -584,7 +610,7 @@ struct PanelView: View {
                     TimelineView(.periodic(from: .now, by: 30)) { context in
                         // Under a minute old means the Claude tab is open and the list is live.
                         Text(context.date.timeIntervalSince(seen) < 60 ? "live" : "as of \(Format.ago(seen, now: context.date)) ago")
-                            .font(.system(size: 10))
+                            .font(.system(size: 10 * scale))
                     }
                     .help("Claude only lists chats while its Claude tab is open. On the Code tab this is the last list seen.")
                 }
@@ -617,7 +643,7 @@ struct PanelView: View {
                     }
                 }
                 .padding(.horizontal, 10)
-                .padding(.top, 3)
+                .padding(.top, 3 * scale)
             }
             }
         }
@@ -626,19 +652,19 @@ struct PanelView: View {
 
     private func pager(_ label: String, action: @escaping () -> Void) -> some View {
         Text(label)
-            .font(.system(size: 10.5, weight: .medium))
+            .font(.system(size: 10.5 * scale, weight: .medium))
             .foregroundStyle(Palette.text2)
-            .padding(.vertical, 3)
+            .padding(.vertical, 3 * scale)
             .contentShape(Rectangle())
             .onTapGesture(perform: action)
     }
 
     private func hint(_ text: String, action: (() -> Void)?) -> some View {
         Text(text)
-            .font(.system(size: 11))
+            .font(.system(size: 11 * scale))
             .foregroundStyle(action == nil ? Palette.text3 : Palette.attention)
             .padding(.horizontal, 10)
-            .padding(.vertical, 5)
+            .padding(.vertical, 5 * scale)
             .contentShape(Rectangle())
             .onTapGesture { action?() }
     }
@@ -662,10 +688,10 @@ struct PanelView: View {
                 ForEach(shown) { row in sessionRow(row) }
                 if recent.count > shown.count {
                     Text("+\(recent.count - shown.count) more · drag the panel taller to see them")
-                        .font(.system(size: 10.5))
+                        .font(.system(size: 10.5 * scale))
                         .foregroundStyle(Palette.text3)
                         .padding(.horizontal, 10)
-                        .padding(.top, 4)
+                        .padding(.top, 4 * scale)
                 }
                 if !older.isEmpty {
                     pager(layout.showOlderSessions
@@ -700,10 +726,10 @@ struct PanelView: View {
         let working = store.rows.filter { $0.state == .working }.count
         return HStack(spacing: 10) {
             LogoMark()
-                .frame(width: 15, height: 15)
+                .frame(width: 15 * scale, height: 15 * scale)
                 .padding(.trailing, -3)
             Text("CLAUDE PULSE")
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: 10 * scale, weight: .semibold))
                 .kerning(1.2)
                 .lineLimit(1)
                 .fixedSize()
@@ -731,7 +757,7 @@ struct PanelView: View {
                 Button("Sessions waiting for you") { Self.openLink("claude://code/needs-input") }
                 Button("Search sessions") { Self.openLink("claude://code/search") }
             } label: {
-                Image(systemName: "plus").font(.system(size: 10.5, weight: .semibold))
+                Image(systemName: "plus").font(.system(size: 10.5 * scale, weight: .semibold))
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
@@ -740,7 +766,7 @@ struct PanelView: View {
             .help("Quick actions")
 
             Image(systemName: "minus")
-                .font(.system(size: 10.5, weight: .semibold))
+                .font(.system(size: 10.5 * scale, weight: .semibold))
                 .foregroundStyle(Palette.text2)
                 .frame(width: 16, height: 16)
                 .contentShape(Rectangle())
@@ -751,7 +777,7 @@ struct PanelView: View {
                 layout.showSettings.toggle()
             } label: {
                 Image(systemName: layout.showSettings ? "xmark" : "gearshape")
-                    .font(.system(size: 10.5, weight: .semibold))
+                    .font(.system(size: 10.5 * scale, weight: .semibold))
                     .foregroundStyle(layout.showSettings ? Palette.text : Palette.text2)
                     .frame(width: 16, height: 16)
                     .contentShape(Rectangle())
@@ -760,8 +786,8 @@ struct PanelView: View {
             .help(layout.showSettings ? "Close settings" : "Settings")
         }
         .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, 8)
+        .padding(.top, 12 * scale)
+        .padding(.bottom, 8 * scale)
     }
 
     private static func openLink(_ link: String) {
@@ -775,26 +801,26 @@ struct PanelView: View {
                 HStack(spacing: 10) {
                     Meter(label: usage.shortLabel, percent: usage.percent)
                     Text(usage.shortLabel == usage.limit ? "" : usage.limit)
-                        .font(.system(size: 10))
+                        .font(.system(size: 10 * scale))
                         .foregroundStyle(Palette.text3)
                         .lineLimit(1)
                     if let resets = usage.resets {
                         Text("resets \(resets)")
-                            .font(.system(size: 10))
+                            .font(.system(size: 10 * scale))
                             .foregroundStyle(usage.percent >= 80 ? Palette.attention : Palette.text3)
                             .lineLimit(1)
                             .fixedSize()
                     }
                     Spacer(minLength: 4)
                     Text(context.date.timeIntervalSince(usage.seenAt) < 90 ? "live" : "as of \(Format.ago(usage.seenAt, now: context.date)) ago")
-                        .font(.system(size: 10))
+                        .font(.system(size: 10 * scale))
                         .foregroundStyle(Palette.text3)
                         .fixedSize()
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 10)
-            .padding(.bottom, 12)
+            .padding(.top, 10 * scale)
+            .padding(.bottom, 12 * scale)
             .help("Read from the usage ring in Claude Desktop. It updates while a page showing that ring is open; otherwise this is the last reading.")
         } else if settings.showUsage, !layout.showSettings, let plan = store.plan {
             TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -803,13 +829,13 @@ struct PanelView: View {
                     Meter(label: "7d", percent: plan.sevenDay)
                     Spacer()
                     Text(context.date.timeIntervalSince(plan.sampledAt) < 60 ? "plan · just now" : "plan · \(Format.ago(plan.sampledAt, now: context.date)) ago")
-                        .font(.system(size: 10))
+                        .font(.system(size: 10 * scale))
                         .foregroundStyle(Palette.text3)
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 10)
-            .padding(.bottom, 12)
+            .padding(.top, 10 * scale)
+            .padding(.bottom, 12 * scale)
             .help("Plan usage as last sampled by Claude Desktop. It is not live.")
         } else {
             Color.clear.frame(height: 8)
@@ -820,6 +846,7 @@ struct PanelView: View {
 /// The Claude Pulse mark: a six-ray burst with a pulse line where the horizontal rays would be.
 /// Same geometry as assets/logo.svg, drawn on a 512 grid.
 struct LogoMark: View {
+    @Environment(\.uiScale) private var scale
     var body: some View {
         Canvas { context, size in
             let scale = min(size.width, size.height) / 360   // the mark spans about 360 of the 512 grid
@@ -857,6 +884,7 @@ struct ConnectionLine: Identifiable {
 /// The header's status light. "Live" means Claude Desktop is running, the session reader is
 /// keeping up, and every data source you have switched on is working.
 private struct LiveBadge: View {
+    @Environment(\.uiScale) private var scale
     let store: SessionStore
     let connections: [ConnectionLine]
     let openSettings: () -> Void
@@ -877,7 +905,7 @@ private struct LiveBadge: View {
             HStack(spacing: 5) {
                 Circle().fill(color).frame(width: 6, height: 6)
                 Text(label)
-                    .font(.system(size: 10.5, weight: .medium))
+                    .font(.system(size: 10.5 * scale, weight: .medium))
                     .foregroundStyle(Palette.text2)
                     .fixedSize()
             }
@@ -905,6 +933,7 @@ struct Headline: Identifiable {
 
 /// The minimized panel: one line that rotates through what needs you, like a news ticker.
 private struct TickerView: View {
+    @Environment(\.uiScale) private var scale
     let headlines: [Headline]
     let expand: () -> Void
     @State private var hovering = false
@@ -914,8 +943,8 @@ private struct TickerView: View {
     var body: some View {
         HStack(spacing: 10) {
             if headlines.isEmpty {
-                Image(systemName: "moon.zzz").font(.system(size: 10)).foregroundStyle(Palette.text3)
-                Text("All quiet").font(.system(size: 12)).foregroundStyle(Palette.text3)
+                Image(systemName: "moon.zzz").font(.system(size: 10 * scale)).foregroundStyle(Palette.text3)
+                Text("All quiet").font(.system(size: 12 * scale)).foregroundStyle(Palette.text3)
                 Spacer(minLength: 0)
             } else {
                 TimelineView(.periodic(from: .now, by: interval)) { context in
@@ -927,11 +956,11 @@ private struct TickerView: View {
                             .foregroundStyle(item.color)
                             .frame(width: 13)
                         Text(item.label)
-                            .font(.system(size: 11.5, weight: .semibold))
+                            .font(.system(size: 11.5 * scale, weight: .semibold))
                             .foregroundStyle(item.color)
                             .fixedSize()
                         Text(item.text)
-                            .font(.system(size: 12))
+                            .font(.system(size: 12 * scale))
                             .foregroundStyle(Palette.text)
                             .lineLimit(1)
                         Spacer(minLength: 0)
@@ -947,17 +976,17 @@ private struct TickerView: View {
                 .clipped()
                 if headlines.count > 1 {
                     Text("\(headlines.count)")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: 10 * scale, weight: .semibold))
                         .monospacedDigit()
                         .foregroundStyle(Palette.text2)
                         .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
+                        .padding(.vertical, 2 * scale)
                         .background(Capsule().fill(Palette.track))
                         .help("\(headlines.count) items in rotation")
                 }
             }
             Image(systemName: "chevron.down")
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: 10 * scale, weight: .semibold))
                 .foregroundStyle(hovering ? Palette.text : Palette.text2)
                 .frame(width: 20, height: 20)
                 .contentShape(Rectangle())
@@ -971,6 +1000,7 @@ private struct TickerView: View {
 }
 
 private struct Tally: View {
+    @Environment(\.uiScale) private var scale
     let count: Int
     let label: String
     let color: Color
@@ -979,7 +1009,7 @@ private struct Tally: View {
         HStack(spacing: 5) {
             Circle().fill(color).frame(width: 6, height: 6)
             Text(label.isEmpty ? "\(count)" : "\(count) \(label)")
-                .font(.system(size: 10.5, weight: .medium))
+                .font(.system(size: 10.5 * scale, weight: .medium))
                 .lineLimit(1)
                 .fixedSize()
                 .foregroundStyle(Palette.text2)
@@ -989,12 +1019,13 @@ private struct Tally: View {
 }
 
 private struct Meter: View {
+    @Environment(\.uiScale) private var scale
     let label: String
     let percent: Int
 
     var body: some View {
         HStack(spacing: 6) {
-            Text(label).font(.system(size: 10, weight: .medium)).foregroundStyle(Palette.text3)
+            Text(label).font(.system(size: 10 * scale, weight: .medium)).foregroundStyle(Palette.text3)
             ZStack(alignment: .leading) {
                 Capsule().fill(Palette.track)
                 Capsule()
@@ -1003,7 +1034,7 @@ private struct Meter: View {
             }
             .frame(width: 44, height: 3)
             Text("\(percent)%")
-                .font(.system(size: 10))
+                .font(.system(size: 10 * scale))
                 .foregroundStyle(Palette.text2)
                 .monospacedDigit()
         }
@@ -1014,6 +1045,7 @@ private struct Meter: View {
 
 /// How full the session's context window is. Turns clay at 80%, when compaction is getting close.
 private struct ContextBar: View {
+    @Environment(\.uiScale) private var scale
     let fraction: Double
 
     var body: some View {
@@ -1028,6 +1060,7 @@ private struct ContextBar: View {
 }
 
 private struct SessionRowView: View {
+    @Environment(\.uiScale) private var scale
     let row: SessionRow
     var pullRequests: [PullRequest] = []
     var showGit = true
@@ -1045,22 +1078,22 @@ private struct SessionRowView: View {
     private var doneBanner: some View {
         HStack(spacing: 6) {
             Image(systemName: row.state == .needsInput ? "questionmark.bubble.fill" : "checkmark.circle.fill")
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: 11 * scale, weight: .semibold))
             Text(row.state == .needsInput
                  ? (row.prompt.map { "Answer me: \($0)" } ?? "Waiting on your answer")
                  : "Done. Get back to me")
-                .font(.system(size: 11.5, weight: .semibold))
+                .font(.system(size: 11.5 * scale, weight: .semibold))
                 .lineLimit(1)
             Spacer(minLength: 6)
             TimelineView(.periodic(from: .now, by: 30)) { context in
                 Text(Format.ago(row.lastActivity, now: context.date) == "now"
                      ? "just now"
                      : "\(Format.ago(row.lastActivity, now: context.date)) ago")
-                    .font(.system(size: 10.5, weight: .medium))
+                    .font(.system(size: 10.5 * scale, weight: .medium))
                     .monospacedDigit()
             }
             Image(systemName: "xmark")
-                .font(.system(size: 9, weight: .bold))
+                .font(.system(size: 9 * scale, weight: .bold))
                 .frame(width: 16, height: 16)
                 .contentShape(Rectangle())
                 .onTapGesture(perform: dismiss)
@@ -1069,9 +1102,9 @@ private struct SessionRowView: View {
         .foregroundStyle(Palette.background)
         .padding(.leading, 9)
         .padding(.trailing, 5)
-        .padding(.vertical, 5)
+        .padding(.vertical, 5 * scale)
         .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(accent))
-        .padding(.top, 4)
+        .padding(.top, 4 * scale)
     }
 
     private var compactRow: some View {
@@ -1079,19 +1112,19 @@ private struct SessionRowView: View {
             StatusDot(state: row.state)
                 .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 }
             Text(row.title)
-                .font(.system(size: 12))
+                .font(.system(size: 12 * scale))
                 .foregroundStyle(Palette.text2)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .layoutPriority(1)
             Text(row.project)
-                .font(.system(size: 10.5))
+                .font(.system(size: 10.5 * scale))
                 .foregroundStyle(Palette.text3)
                 .lineLimit(1)
             Spacer(minLength: 4)
             TimelineView(.periodic(from: .now, by: 30)) { context in
                 Text(Format.ago(row.lastActivity, now: context.date))
-                    .font(.system(size: 10.5))
+                    .font(.system(size: 10.5 * scale))
                     .foregroundStyle(Palette.text3)
                     .monospacedDigit()
                     .fixedSize()
@@ -1123,28 +1156,28 @@ private struct SessionRowView: View {
     }
 
     private var fullRow: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: 10 * scale) {
             StatusDot(state: row.state)
-                .padding(.top, 4)
+                .padding(.top, 4 * scale)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(row.title)
                         // Bold is reserved for rows whose next move is yours.
-                        .font(.system(size: 12.5, weight: row.wantsYou ? .semibold : .regular))
+                        .font(.system(size: 12.5 * scale, weight: row.wantsYou ? .semibold : .regular))
                         .foregroundStyle(row.state == .idle ? Palette.text2 : Palette.text)
                         .lineLimit(1)
                         .truncationMode(.tail)
                     Spacer(minLength: 4)
                     TimelineView(.periodic(from: .now, by: 30)) { context in
                         Text(trailing(now: context.date))
-                            .font(.system(size: 10.5, weight: row.state == .idle ? .regular : .medium))
+                            .font(.system(size: 10.5 * scale, weight: row.state == .idle ? .regular : .medium))
                             .foregroundStyle(trailingColor)
                             .monospacedDigit()
                     }
                 }
                 HStack(spacing: 8) {
                     HStack(spacing: 4) {
-                        Image(systemName: "folder").font(.system(size: 9.5))
+                        Image(systemName: "folder").font(.system(size: 9.5 * scale))
                         Text(subtitle)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -1160,7 +1193,7 @@ private struct SessionRowView: View {
                         .fixedSize()
                     }
                 }
-                .font(.system(size: 10.5))
+                .font(.system(size: 10.5 * scale))
                 .foregroundStyle(Palette.text3)
                 if showGit, row.git != nil || row.pr != nil || !pullRequests.isEmpty {
                     gitLine
@@ -1189,7 +1222,7 @@ private struct SessionRowView: View {
     private var gitLine: some View {
         HStack(spacing: 4) {
             if let git = row.git {
-                Image(systemName: "arrow.triangle.branch").font(.system(size: 9))
+                Image(systemName: "arrow.triangle.branch").font(.system(size: 9 * scale))
                 Text(gitSummary(git)).lineLimit(1).truncationMode(.middle)
             }
             Spacer(minLength: 4)
@@ -1220,7 +1253,7 @@ private struct SessionRowView: View {
                     .help("Open the pull request. State is as Claude Desktop last recorded it.")
             }
         }
-        .font(.system(size: 10.5))
+        .font(.system(size: 10.5 * scale))
         .foregroundStyle(Palette.text3)
         .monospacedDigit()
     }
@@ -1268,23 +1301,24 @@ private struct SessionRowView: View {
 }
 
 private struct StatusDot: View {
+    @Environment(\.uiScale) private var scale
     let state: SessionState
 
     var body: some View {
         ZStack {
             switch state {
             case .working:
-                PulseHalo().frame(width: 8, height: 8)
-                Circle().fill(Palette.working).frame(width: 8, height: 8)
+                PulseHalo().frame(width: 8 * scale, height: 8 * scale)
+                Circle().fill(Palette.working).frame(width: 8 * scale, height: 8 * scale)
             case .needsInput:
-                Circle().fill(Palette.attention).frame(width: 8, height: 8)
+                Circle().fill(Palette.attention).frame(width: 8 * scale, height: 8 * scale)
             case .needsYou:
-                Circle().fill(Palette.done).frame(width: 8, height: 8)
+                Circle().fill(Palette.done).frame(width: 8 * scale, height: 8 * scale)
             case .idle:
-                Circle().strokeBorder(Palette.idle, lineWidth: 1.5).frame(width: 8, height: 8)
+                Circle().strokeBorder(Palette.idle, lineWidth: 1.5).frame(width: 8 * scale, height: 8 * scale)
             }
         }
-        .frame(width: 10, height: 10)
+        .frame(width: 10 * scale, height: 10 * scale)
     }
 }
 
@@ -1335,24 +1369,25 @@ private struct PulseHalo: NSViewRepresentable {
 
 /// Shown when Duet has nothing active; still a way into Duet.
 private struct DuetEmptyRowView: View {
+    @Environment(\.uiScale) private var scale
     let open: () -> Void
     @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 8) {
             Text("No active Duet tasks")
-                .font(.system(size: 11))
+                .font(.system(size: 11 * scale))
                 .foregroundStyle(hovering ? Palette.text2 : Palette.text3)
             Spacer(minLength: 4)
             Text("Open Duet")
-                .font(.system(size: 10.5, weight: .medium))
+                .font(.system(size: 10.5 * scale, weight: .medium))
                 .foregroundStyle(hovering ? Palette.text : Palette.text2)
             Image(systemName: "arrow.up.right")
-                .font(.system(size: 8.5, weight: .semibold))
+                .font(.system(size: 8.5 * scale, weight: .semibold))
                 .foregroundStyle(Palette.text2)
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.vertical, 5 * scale)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(hovering ? Palette.raised : Color.clear)
@@ -1365,6 +1400,7 @@ private struct DuetEmptyRowView: View {
 }
 
 struct DuetTaskRowView: View {
+    @Environment(\.uiScale) private var scale
     let task: DuetTask
     let open: () -> Void
     let complete: () -> Void
@@ -1376,28 +1412,28 @@ struct DuetTaskRowView: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: 8 * scale) {
             Image(systemName: task.needsInput ? "questionmark.bubble.fill" : task.readyForReview ? "checkmark.circle" : "circle.dotted")
-                .font(.system(size: 9.5))
+                .font(.system(size: 9.5 * scale))
                 .foregroundStyle(color)
-                .frame(width: 12)
-                .padding(.top, 3)
+                .frame(width: 12 * scale)
+                .padding(.top, 3 * scale)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(task.title)
-                        .font(.system(size: 12, weight: task.needsInput ? .semibold : .regular))
+                        .font(.system(size: 12 * scale, weight: task.needsInput ? .semibold : .regular))
                         .foregroundStyle(task.needsInput ? Palette.text : Palette.text2)
                         .lineLimit(1)
                     Spacer(minLength: 4)
                     if completing {
                         Text("completing…")
-                            .font(.system(size: 10))
+                            .font(.system(size: 10 * scale))
                             .foregroundStyle(Palette.text3)
                             .fixedSize()
                     } else if hovering {
                         HStack(spacing: 4) {
-                            Image(systemName: "checkmark.circle").font(.system(size: 11, weight: .medium))
-                            Text("Mark complete").font(.system(size: 10, weight: .medium))
+                            Image(systemName: "checkmark.circle").font(.system(size: 11 * scale, weight: .medium))
+                            Text("Mark complete").font(.system(size: 10 * scale, weight: .medium))
                         }
                         .foregroundStyle(Palette.text)
                         .fixedSize()
@@ -1411,21 +1447,21 @@ struct DuetTaskRowView: View {
                         .help("Mark this task complete in Duet. Claude's window visits Duet briefly to do it.")
                     } else {
                         Text(task.status.lowercased())
-                            .font(.system(size: 10, weight: task.needsInput ? .medium : .regular))
+                            .font(.system(size: 10 * scale, weight: task.needsInput ? .medium : .regular))
                             .foregroundStyle(color)
                             .fixedSize()
                     }
                 }
                 if let summary = task.summary {
                     Text(summary)
-                        .font(.system(size: 10.5))
+                        .font(.system(size: 10.5 * scale))
                         .foregroundStyle(Palette.text3)
                         .lineLimit(1)
                 }
             }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.vertical, 5 * scale)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(task.needsInput
@@ -1440,28 +1476,29 @@ struct DuetTaskRowView: View {
 }
 
 private struct SkillIdeaRowView: View {
+    @Environment(\.uiScale) private var scale
     let idea: Insights.SkillIdea
     let dismiss: () -> Void
     @State private var hovering = false
     @State private var started = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: 8 * scale) {
             Image(systemName: started ? "checkmark" : "lightbulb")
-                .font(.system(size: 9.5))
+                .font(.system(size: 9.5 * scale))
                 .foregroundStyle(started ? Palette.done : Palette.attention)
-                .frame(width: 12)
-                .padding(.top, 3)
+                .frame(width: 12 * scale)
+                .padding(.top, 3 * scale)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(idea.name)
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .font(.system(size: 12 * scale, weight: .medium, design: .monospaced))
                         .foregroundStyle(Palette.text)
                         .lineLimit(1)
                     Spacer(minLength: 4)
                     if hovering {
                         Image(systemName: "xmark")
-                            .font(.system(size: 8.5, weight: .bold))
+                            .font(.system(size: 8.5 * scale, weight: .bold))
                             .foregroundStyle(Palette.text2)
                             .frame(width: 16, height: 14)
                             .contentShape(Rectangle())
@@ -1469,21 +1506,21 @@ private struct SkillIdeaRowView: View {
                             .help("Not interested")
                     } else if let seen = idea.seen {
                         Text("asked ~\(seen)×")
-                            .font(.system(size: 10))
+                            .font(.system(size: 10 * scale))
                             .foregroundStyle(Palette.text3)
                             .monospacedDigit()
                             .fixedSize()
                     }
                 }
                 Text(started ? "Prompt copied. Paste it into the new session if it is not already there." : idea.why)
-                    .font(.system(size: 10.5))
+                    .font(.system(size: 10.5 * scale))
                     .foregroundStyle(started ? Palette.done : Palette.text3)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.vertical, 5 * scale)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(hovering ? Palette.raised : Color.clear)
@@ -1506,28 +1543,29 @@ private struct SkillIdeaRowView: View {
 }
 
 private struct PullRequestRowView: View {
+    @Environment(\.uiScale) private var scale
     let pr: PullRequest
     let ignore: () -> Void
     @State private var hovering = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: 8 * scale) {
             Image(systemName: pr.kind == .reviewRequested ? "eye" : "arrow.triangle.pull")
-                .font(.system(size: 9.5))
+                .font(.system(size: 9.5 * scale))
                 .foregroundStyle(pr.status.needsYou ? Palette.attention : Palette.text3)
-                .frame(width: 12)
-                .padding(.top, 3)
+                .frame(width: 12 * scale)
+                .padding(.top, 3 * scale)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(pr.title)
-                        .font(.system(size: 12, weight: pr.status.needsYou ? .semibold : .regular))
+                        .font(.system(size: 12 * scale, weight: pr.status.needsYou ? .semibold : .regular))
                         .foregroundStyle(pr.status.needsYou ? Palette.text : Palette.text2)
                         .lineLimit(1)
                     Spacer(minLength: 4)
                     if hovering {
                         HStack(spacing: 4) {
-                            Image(systemName: "eye.slash").font(.system(size: 10))
-                            Text("Ignore").font(.system(size: 10, weight: .medium))
+                            Image(systemName: "eye.slash").font(.system(size: 10 * scale))
+                            Text("Ignore").font(.system(size: 10 * scale, weight: .medium))
                         }
                         .foregroundStyle(Palette.text2)
                         .fixedSize()
@@ -1536,20 +1574,20 @@ private struct PullRequestRowView: View {
                         .help("Stop showing this pull request. Bring it back from settings.")
                     } else {
                         Text(pr.status.label)
-                            .font(.system(size: 10, weight: pr.status.needsYou ? .medium : .regular))
+                            .font(.system(size: 10 * scale, weight: pr.status.needsYou ? .medium : .regular))
                             .foregroundStyle(statusColor)
                             .fixedSize()
                     }
                 }
                 Text("\(pr.repo) #\(pr.number)" + (pr.kind == .reviewRequested && !pr.author.isEmpty ? " · by \(pr.author)" : ""))
-                    .font(.system(size: 10.5))
+                    .font(.system(size: 10.5 * scale))
                     .foregroundStyle(Palette.text3)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.vertical, 5 * scale)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(hovering ? Palette.raised : Color.clear)
@@ -1572,6 +1610,7 @@ private struct PullRequestRowView: View {
 }
 
 private struct ArtifactRowView: View {
+    @Environment(\.uiScale) private var scale
     let item: ArtifactItem
     let open: () -> Void
     /// Present on rows in "Needs you": clears the row without opening the artifact.
@@ -1581,28 +1620,28 @@ private struct ArtifactRowView: View {
     private var waiting: Int { item.mentions ?? 0 }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: 8 * scale) {
             Image(systemName: item.newShareAt != nil ? "person.badge.plus" : item.owner == "shared" ? "person.2" : "doc.richtext")
-                .font(.system(size: 9.5))
+                .font(.system(size: 9.5 * scale))
                 .foregroundStyle(waiting > 0 || item.newShareAt != nil ? Palette.attention : Palette.text3)
-                .frame(width: 12)
-                .padding(.top, 3)
+                .frame(width: 12 * scale)
+                .padding(.top, 3 * scale)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(item.title)
-                        .font(.system(size: 12, weight: waiting > 0 || item.newShareAt != nil ? .semibold : .regular))
+                        .font(.system(size: 12 * scale, weight: waiting > 0 || item.newShareAt != nil ? .semibold : .regular))
                         .foregroundStyle(waiting > 0 || item.newShareAt != nil ? Palette.text : Palette.text2)
                         .lineLimit(1)
                     Spacer(minLength: 4)
                     Text(trailing)
-                        .font(.system(size: 10, weight: waiting > 0 || item.newShareAt != nil || item.hasNewComments ? .medium : .regular))
+                        .font(.system(size: 10 * scale, weight: waiting > 0 || item.newShareAt != nil || item.hasNewComments ? .medium : .regular))
                         .foregroundStyle(waiting > 0 || item.newShareAt != nil ? Palette.attention
                                          : item.hasNewComments ? Palette.text2 : Palette.text3)
                         .monospacedDigit()
                         .fixedSize()
                     if hovering, let dismiss {
                         Image(systemName: "xmark")
-                            .font(.system(size: 8.5, weight: .bold))
+                            .font(.system(size: 8.5 * scale, weight: .bold))
                             .foregroundStyle(Palette.text2)
                             .frame(width: 16, height: 14)
                             .contentShape(Rectangle())
@@ -1614,14 +1653,14 @@ private struct ArtifactRowView: View {
                 }
                 if waiting > 0, let preview = item.mentionPreview {
                     Text("\(item.lastCommentBy.map { $0 + ": " } ?? "")\(preview)")
-                        .font(.system(size: 10.5))
+                        .font(.system(size: 10.5 * scale))
                         .foregroundStyle(Palette.text3)
                         .lineLimit(1)
                 }
             }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.vertical, 5 * scale)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(hovering ? Palette.raised : Color.clear)
@@ -1657,6 +1696,7 @@ private struct ArtifactRowView: View {
 }
 
 private struct ChatRowView: View {
+    @Environment(\.uiScale) private var scale
     let chat: ChatItem
     let open: () -> Void
     let hide: () -> Void
@@ -1665,17 +1705,17 @@ private struct ChatRowView: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "bubble.left")
-                .font(.system(size: 9.5))
+                .font(.system(size: 9.5 * scale))
                 .foregroundStyle(Palette.text3)
-                .frame(width: 12)
+                .frame(width: 12 * scale)
             Text(chat.title)
-                .font(.system(size: 12))
+                .font(.system(size: 12 * scale))
                 .foregroundStyle(Palette.text2)
                 .lineLimit(1)
             Spacer(minLength: 4)
             if hovering {
                 Image(systemName: "eye.slash")
-                    .font(.system(size: 10))
+                    .font(.system(size: 10 * scale))
                     .foregroundStyle(Palette.text2)
                     .frame(width: 18, height: 14)
                     .contentShape(Rectangle())
@@ -1683,14 +1723,14 @@ private struct ChatRowView: View {
                     .help("Hide this chat from the panel")
             } else if let badge = chat.badge {
                 Text(badge.replacingOccurrences(of: "Includes an artifact", with: "artifact"))
-                    .font(.system(size: 10))
+                    .font(.system(size: 10 * scale))
                     .foregroundStyle(Palette.text3)
                     .lineLimit(1)
                     .fixedSize()
             }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.vertical, 5 * scale)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(hovering ? Palette.raised : Color.clear)
@@ -1708,6 +1748,7 @@ private struct ChatRowView: View {
 // MARK: - Settings
 
 private struct SettingsView: View {
+    @Environment(\.uiScale) private var scale
     @ObservedObject var settings: Settings
     @ObservedObject var github: GitHubReader
     var connections: [ConnectionLine] = []
@@ -1720,10 +1761,10 @@ private struct SettingsView: View {
                         Circle()
                             .fill(line.state == .ok ? Palette.done : line.state == .down ? Palette.text3 : LiveBadge.warning)
                             .frame(width: 6, height: 6)
-                        Text(line.name).font(.system(size: 12)).foregroundStyle(Palette.text)
+                        Text(line.name).font(.system(size: 12 * scale)).foregroundStyle(Palette.text)
                         Spacer(minLength: 8)
                         Text(line.detail)
-                            .font(.system(size: 10.5))
+                            .font(.system(size: 10.5 * scale))
                             .foregroundStyle(line.state == .ok ? Palette.text3 : Palette.text2)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -1738,6 +1779,9 @@ private struct SettingsView: View {
                 toggle("Chats", $settings.showChats)
                 toggle("Skills worth creating", $settings.showSkillIdeas)
                 toggle("Your usage and limits", $settings.showUsage)
+            }
+            section("Appearance") {
+                toggle("Larger text as the panel gets wider", $settings.scaleText)
             }
             section("On each Code row") {
                 toggle("Git branch and changes", $settings.showGit)
@@ -1761,7 +1805,7 @@ private struct SettingsView: View {
                     .padding(.leading, 12)
                 } else {
                     Text("Claude Pulse will not send any notifications. The panel still shows everything.")
-                        .font(.system(size: 10.5))
+                        .font(.system(size: 10.5 * scale))
                         .foregroundStyle(Palette.text3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -1771,7 +1815,7 @@ private struct SettingsView: View {
                     ForEach(settings.ignoredPullRequests.sorted { $0.value < $1.value }, id: \.key) { url, label in
                         HStack {
                             Text(label)
-                                .font(.system(size: 12))
+                                .font(.system(size: 12 * scale))
                                 .foregroundStyle(Palette.text2)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
@@ -1789,7 +1833,7 @@ private struct SettingsView: View {
                     ForEach(settings.hiddenChats, id: \.self) { title in
                         HStack {
                             Text(title)
-                                .font(.system(size: 12))
+                                .font(.system(size: 12 * scale))
                                 .foregroundStyle(Palette.text2)
                                 .lineLimit(1)
                             Spacer(minLength: 8)
@@ -1803,13 +1847,13 @@ private struct SettingsView: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.top, 4)
-        .padding(.bottom, 14)
+        .padding(.top, 4 * scale)
+        .padding(.bottom, 14 * scale)
     }
 
     private func link(_ label: String, action: @escaping () -> Void) -> some View {
         Text(label)
-            .font(.system(size: 11, weight: .medium))
+            .font(.system(size: 11 * scale, weight: .medium))
             .foregroundStyle(Palette.attention)
             .contentShape(Rectangle())
             .onTapGesture(perform: action)
@@ -1818,7 +1862,7 @@ private struct SettingsView: View {
     private func section<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title.uppercased())
-                .font(.system(size: 9.5, weight: .semibold))
+                .font(.system(size: 9.5 * scale, weight: .semibold))
                 .kerning(0.8)
                 .foregroundStyle(Palette.text3)
             content()
@@ -1827,7 +1871,7 @@ private struct SettingsView: View {
 
     private func toggle(_ label: String, _ value: Binding<Bool>) -> some View {
         HStack {
-            Text(label).font(.system(size: 12)).foregroundStyle(Palette.text)
+            Text(label).font(.system(size: 12 * scale)).foregroundStyle(Palette.text)
             Spacer()
             Toggle("", isOn: value)
                 .labelsHidden()
@@ -1839,16 +1883,16 @@ private struct SettingsView: View {
 
     private func choice(_ label: String, _ value: Binding<Int>, _ options: [(Int, String)]) -> some View {
         HStack {
-            Text(label).font(.system(size: 12)).foregroundStyle(Palette.text)
+            Text(label).font(.system(size: 12 * scale)).foregroundStyle(Palette.text)
             Spacer()
             HStack(spacing: 2) {
                 ForEach(options, id: \.0) { option in
                     let selected = value.wrappedValue == option.0
                     Text(option.1)
-                        .font(.system(size: 10.5, weight: selected ? .semibold : .regular))
+                        .font(.system(size: 10.5 * scale, weight: selected ? .semibold : .regular))
                         .foregroundStyle(selected ? Palette.text : Palette.text3)
                         .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
+                        .padding(.vertical, 3 * scale)
                         .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
                             .fill(selected ? Palette.raised : Color.clear))
                         .contentShape(Rectangle())

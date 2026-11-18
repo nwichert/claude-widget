@@ -60,6 +60,9 @@ final class Settings: ObservableObject {
         didSet { defaults.set(notificationAccess, forKey: "notificationAccess") }
     }
 
+    /// Whether text and spacing grow with the panel's width.
+    @Published var scaleText: Bool { didSet { defaults.set(scaleText, forKey: "scaleText") } }
+
     /// Pull requests you have chosen to ignore: URL -> a label to show in settings.
     @Published var ignoredPullRequests: [String: String] {
         didSet { defaults.set(ignoredPullRequests, forKey: "ignoredPullRequests") }
@@ -101,6 +104,7 @@ final class Settings: ObservableObject {
         showSkillIdeas = Self.bool(Key.showSkillIdeas, default: combined)
         showUsage = Self.bool(Key.showUsage, default: combined)
         showDuet = Self.bool(Key.showDuet, default: true)
+        scaleText = Self.bool("scaleText", default: true)
         ignoredPullRequests = (UserDefaults.standard.dictionary(forKey: "ignoredPullRequests") as? [String: String]) ?? [:]
         collapsedSections = UserDefaults.standard.stringArray(forKey: "collapsedSections") ?? ["skills", "usage"]
         dismissedIdeas = UserDefaults.standard.stringArray(forKey: Key.dismissedIdeas) ?? []
