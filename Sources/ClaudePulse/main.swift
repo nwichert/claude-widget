@@ -30,6 +30,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Diagnostic: post one notification, to check delivery and the icon, then quit.
+        if CommandLine.arguments.contains("--notify-test") {
+            let content = UNMutableNotificationContent()
+            content.title = "Claude Pulse"
+            content.body = "Test notification. This should carry the Claude Pulse icon."
+            UNUserNotificationCenter.current().add(
+                UNNotificationRequest(identifier: "test-\(Date().timeIntervalSince1970)", content: content, trigger: nil))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { NSApp.terminate(nil) }
+            return
+        }
         // Diagnostic: walk through completing the last remembered Duet task without ticking it.
         if CommandLine.arguments.contains("--complete-duet-dry") {
             let path = CommandLine.arguments.last ?? "/dev/null"
