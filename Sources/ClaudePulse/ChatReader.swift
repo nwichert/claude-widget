@@ -36,6 +36,10 @@ final class ChatReader: ObservableObject {
     /// Like chats, Duet is only readable while it is on screen.
     @Published private(set) var duetTasks: [DuetTask] = []
     @Published private(set) var duetSeenAt: Date?
+    /// Called on the main queue when a Duet task is seen needing input for the first time.
+    var onDuetNeedsInput: ((DuetTask) -> Void)?
+    /// Titles already known to need input, so each task alerts once. Touched only on the reader queue.
+    private var duetAlerted: Set<String>?
     private let duetKey = "duetTasks"
     private let duetSeenKey = "duetTasksSeenAt"
 
@@ -72,6 +76,8 @@ final class ChatReader: ObservableObject {
         if let data = UserDefaults.standard.data(forKey: duetKey),
            let cached = try? JSONDecoder().decode([DuetTask].self, from: data) {
             duetTasks = cached
+            // Whatever already needed input when the widget last looked is not news after a restart.
+            duetAlerted = Set(cached.filter { $0.needsInput }.map(\.title))
             let t = UserDefaults.standard.double(forKey: duetSeenKey)
             duetSeenAt = t > 0 ? Date(timeIntervalSince1970: t) : nil
         }
@@ -191,6 +197,25 @@ final class ChatReader: ObservableObject {
         guard activeTab else { return }
 
         tasks.sort { ($0.needsInput ? 0 : $0.readyForReview ? 1 : 2) < ($1.needsInput ? 0 : $1.readyForReview ? 1 : 2) }
+
+        // Alert once per task when it starts needing input. The very first list ever read only
+        // sets the baseline. Nothing fires while Claude is the front app: you can see Duet then.
+        let waiting = Set(tasks.filter { $0.needsInput }.map(\.title))
+        var fresh: [DuetTask] = []
+        if let alerted = duetAlerted {
+            let claudeIsFront = DispatchQueue.main.sync {
+                NSWorkspace.shared.frontmostApplication?.bundleIdentifier == claudeBundleID
+            }
+            if !claudeIsFront {
+                fresh = tasks.filter { $0.needsInput && !alerted.contains($0.title) }
+                duetAlerted = waiting
+            } else {
+                // Seen on screen: count them as known, and forget ones that stopped waiting.
+                duetAlerted = waiting
+            }
+        } else {
+            duetAlerted = waiting
+        }
         let now = Date()
         if let data = try? JSONEncoder().encode(tasks) {
             UserDefaults.standard.set(data, forKey: duetKey)
@@ -199,6 +224,7 @@ final class ChatReader: ObservableObject {
         DispatchQueue.main.async {
             if self.duetTasks != tasks { self.duetTasks = tasks }
             self.duetSeenAt = now
+            fresh.forEach { self.onDuetNeedsInput?($0) }
         }
     }
 

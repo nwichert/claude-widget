@@ -105,6 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         chats.start()
         artifacts.onNewMentions = { [weak self] item in self?.notifyMention(item) }
         artifacts.onNewShare = { [weak self] item in self?.notifyShare(item) }
+        chats.onDuetNeedsInput = { [weak self] task in self?.notifyDuet(task) }
         artifacts.start()
         github.start()
         insights.start()
@@ -263,6 +264,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // One notification per session: a newer one replaces the older.
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: row.id, content: content, trigger: nil))
+    }
+
+    private func notifyDuet(_ task: DuetTask) {
+        guard canNotify, notifyEnabled, Settings.shared.showDuet else { return }
+        let content = UNMutableNotificationContent()
+        content.title = task.title
+        content.body = "Duet needs your input" + (task.summary.map { ": \($0)" } ?? "")
+        content.sound = .default
+        // Open the task inside the Claude app rather than the browser.
+        let web = task.url ?? "https://claude.ai/messages"
+        content.userInfo = ["url": web.replacingOccurrences(of: "https://", with: "claude://")]
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: "duet-" + task.title, content: content, trigger: nil))
     }
 
     private func notifyShare(_ item: ArtifactItem) {

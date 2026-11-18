@@ -947,7 +947,7 @@ private struct PulseHalo: NSViewRepresentable {
     func updateNSView(_ nsView: HaloView, context: Context) {}
 }
 
-private struct DuetTaskRowView: View {
+struct DuetTaskRowView: View {
     let task: DuetTask
     @State private var hovering = false
 
