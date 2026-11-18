@@ -91,6 +91,12 @@ final class TokenTally {
         state.totals.input += u.input
         state.totals.output += u.output
         state.totals.cacheRead += u.cacheRead
+        if (obj["isSidechain"] as? Bool) != true,
+           let text = (message["content"] as? [[String: Any]])?
+               .last(where: { $0["type"] as? String == "text" })?["text"] as? String {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { state.totals.endsWithQuestion = trimmed.hasSuffix("?") }
+        }
         if (obj["isSidechain"] as? Bool) != true, u.context > 0 {
             state.totals.context = u.context
             state.totals.peakContext = max(state.totals.peakContext, u.context)

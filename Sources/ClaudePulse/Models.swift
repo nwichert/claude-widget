@@ -1,9 +1,12 @@
 import Foundation
 
 enum SessionState: Int, Comparable {
-    case needsYou = 0
-    case working = 1
-    case idle = 2
+    /// Claude is stopped on a question or approval, or ended its turn by asking you something.
+    case needsInput = 0
+    /// Claude finished and has not been looked at since.
+    case needsYou = 1
+    case working = 2
+    case idle = 3
 
     static func < (a: SessionState, b: SessionState) -> Bool { a.rawValue < b.rawValue }
 }
@@ -17,6 +20,8 @@ struct TokenTotals: Equatable {
     var output = 0
     var input = 0
     var cacheRead = 0
+    /// Whether Claude's latest message on the main thread ends in a question mark.
+    var endsWithQuestion = false
 }
 
 struct SessionRow: Identifiable, Equatable {
@@ -37,6 +42,11 @@ struct SessionRow: Identifiable, Equatable {
     var contextWindow = 200_000
     var git: GitInfo?
     var pr: PRInfo?
+    /// What Claude is asking for, when known.
+    var prompt: String?
+
+    /// Either "answer me" or "I'm done": the next move is yours.
+    var wantsYou: Bool { state == .needsInput || state == .needsYou }
 
     var contextFraction: Double {
         contextWindow > 0 ? min(1, Double(tokens.context) / Double(contextWindow)) : 0

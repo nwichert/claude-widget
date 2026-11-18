@@ -19,6 +19,21 @@ final class ChatReader: ObservableObject {
     @Published private(set) var seenAt: Date?
     @Published private(set) var trusted = AXIsProcessTrusted()
 
+    /// What the sidebar looked like on the last pass, for the session reader (any thread).
+    struct Sidebar {
+        var at: Date
+        var chatTab: Bool
+        /// Row title -> the status text beside it, e.g. "Running" or "Awaiting input".
+        var badges: [String: String]
+    }
+
+    private let sidebarLock = NSLock()
+    private var lastSidebar: Sidebar?
+    var sidebar: Sidebar? {
+        sidebarLock.lock(); defer { sidebarLock.unlock() }
+        return lastSidebar
+    }
+
     private let queue = DispatchQueue(label: "claude-pulse.ax", qos: .utility)
     private var timer: DispatchSourceTimer?
     private var preparedPid: pid_t = 0
@@ -77,10 +92,17 @@ final class ChatReader: ObservableObject {
     // MARK: - Reading
 
     private func tick() {
-        guard Settings.bool(Settings.Key.showChats, default: true) else { return }
         let isTrusted = AXIsProcessTrusted()
         if isTrusted != trusted { DispatchQueue.main.async { self.trusted = isTrusted } }
-        guard isTrusted, let root = claudeRoot(), let scan = scanSidebar(root), scan.chatTab else { return }
+        guard isTrusted, let root = claudeRoot(), let scan = scanSidebar(root) else { return }
+
+        var badges: [String: String] = [:]
+        for row in scan.rows { if let badge = row.badge { badges[row.title] = badge } }
+        sidebarLock.lock()
+        lastSidebar = Sidebar(at: Date(), chatTab: scan.chatTab, badges: badges)
+        sidebarLock.unlock()
+
+        guard scan.chatTab, Settings.bool(Settings.Key.showChats, default: true) else { return }
 
         let items = Array(scan.recents.prefix(limit))
         guard !items.isEmpty else { return }
@@ -113,6 +135,8 @@ final class ChatReader: ObservableObject {
         var chatTabButton: AXUIElement?
         var recents: [ChatItem] = []
         var buttons: [String: AXUIElement] = [:]
+        /// Every sidebar row with the status text Claude shows beside it, if any.
+        var rows: [(title: String, badge: String?, section: String)] = []
     }
 
     private func attr(_ e: AXUIElement, _ name: String) -> AnyObject? {
@@ -143,6 +167,34 @@ final class ChatReader: ObservableObject {
             }
         }
         return out
+    }
+
+    /// Diagnostic: samples the sidebar's per-row status text alongside Claude's own session files,
+    /// to learn what each looks like while a session is waiting on the user.
+    func watch(to path: String, seconds: Int) {
+        var log: [String] = []
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let end = Date().addingTimeInterval(TimeInterval(seconds))
+        let stamp = DateFormatter()
+        stamp.dateFormat = "HH:mm:ss"
+        while Date() < end {
+            var line = "\(stamp.string(from: Date())) front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")"
+            if let root = claudeRoot(), let scan = scanSidebar(root) {
+                line += " chatTab=\(scan.chatTab)"
+                for row in scan.rows where row.badge != nil {
+                    line += "\n    sidebar: \(row.title.prefix(28)) => \(row.badge ?? "")"
+                }
+            }
+            let dir = home.appendingPathComponent(".claude/sessions")
+            for file in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] where file.pathExtension == "json" {
+                guard let data = try? Data(contentsOf: file),
+                      let d = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { continue }
+                line += "\n    live: \(((d["name"] as? String) ?? "").prefix(28)) status=\(d["status"] ?? "-") waitingFor=\(d["waitingFor"] ?? "-")"
+            }
+            log.append(line)
+            try? log.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+            Thread.sleep(forTimeInterval: 3)
+        }
     }
 
     /// Diagnostic: what one sidebar pass found, as counts only.
@@ -198,6 +250,7 @@ final class ChatReader: ObservableObject {
                     let title = String(text.dropFirst(prefix.count))
                     if let c = candidates[title], title != heading {
                         scan.buttons[title] = c.element
+                        scan.rows.append((title, c.badge, heading))
                         if heading == "Recents" {
                             scan.recents.append(ChatItem(title: title, badge: c.badge))
                         }

@@ -51,10 +51,37 @@ struct PanelView: View {
     /// Cap while the panel sizes itself, so a busy day cannot run it off the screen.
     private let autoMaxRows = 12
 
+    /// Shown when the widget would notify you but macOS will not let it.
+    @ViewBuilder private var notificationWarning: some View {
+        let access = settings.notificationAccess
+        if settings.notifyOnFinish, ["denied", "notDetermined", "bannersOff"].contains(access) {
+            HStack(alignment: .top, spacing: 7) {
+                Image(systemName: "bell.slash.fill").font(.system(size: 10.5)).padding(.top, 2)
+                Text(access == "bannersOff"
+                     ? "macOS has banners turned off for Claude Pulse, so nothing will pop up. Click to open Notification settings."
+                     : "macOS is not allowing Claude Pulse notifications, so you will not be alerted. Click to open Notification settings.")
+                    .font(.system(size: 11, weight: .medium))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(Palette.background)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Palette.attention))
+            .padding(.horizontal, 10)
+            .padding(.bottom, 8)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                Self.openLink("x-apple.systempreferences:com.apple.Notifications-Settings.extension")
+            }
+        }
+    }
+
     @ViewBuilder private var expanded: some View {
         let manual = layout.manualHeight
         VStack(alignment: .leading, spacing: 0) {
             header
+            notificationWarning
             if layout.showSettings {
                 if manual {
                     // A long hidden-chats list must stay reachable at whatever height you chose.
@@ -101,9 +128,14 @@ struct PanelView: View {
     /// Artifact tags stay in the full panel only.
     private var headlines: [Headline] {
         var out: [Headline] = []
+        for row in store.rows where row.state == .needsInput {
+            out.append(Headline(id: "ask-" + row.id, icon: "questionmark.bubble.fill", color: Palette.attention,
+                                label: "Answer", text: row.title,
+                                action: { open(row) }))
+        }
         for row in store.rows where row.state == .needsYou {
             out.append(Headline(id: "done-" + row.id, icon: "checkmark.circle.fill", color: Palette.done,
-                                label: row.waitingFor == nil ? "Done" : "Needs input", text: row.title,
+                                label: "Done", text: row.title,
                                 action: { open(row) }))
         }
         if settings.showGitHub {
@@ -316,6 +348,7 @@ struct PanelView: View {
 
     private var header: some View {
         let waiting = store.rows.filter { $0.state == .needsYou }.count
+        let asking = store.rows.filter { $0.state == .needsInput }.count
         let working = store.rows.filter { $0.state == .working }.count
         return HStack(spacing: 10) {
             Text("CLAUDE")
@@ -323,9 +356,10 @@ struct PanelView: View {
                 .kerning(1.2)
                 .foregroundStyle(Palette.text2)
             Spacer()
+            if asking > 0 { Tally(count: asking, label: asking == 1 ? "needs answer" : "need answers", color: Palette.attention) }
             if waiting > 0 { Tally(count: waiting, label: "done", color: Palette.done) }
             if working > 0 { Tally(count: working, label: "working", color: Palette.working) }
-            if waiting == 0 && working == 0 {
+            if waiting == 0 && working == 0 && asking == 0 {
                 Text("all quiet").font(.system(size: 10.5)).foregroundStyle(Palette.text3)
             }
             Menu {
@@ -534,12 +568,17 @@ private struct SessionRowView: View {
     var dismiss: () -> Void = {}
     @State private var hovering = false
 
-    /// The loud part: a solid green bar on any session that finished while you were elsewhere.
+    /// Orange when Claude is waiting on an answer from you, green when it simply finished.
+    private var accent: Color { row.state == .needsInput ? Palette.attention : Palette.done }
+
+    /// The loud part: a solid bar on any session whose next move is yours.
     private var doneBanner: some View {
         HStack(spacing: 6) {
-            Image(systemName: row.waitingFor == nil ? "checkmark.circle.fill" : "hand.raised.fill")
+            Image(systemName: row.state == .needsInput ? "questionmark.bubble.fill" : "checkmark.circle.fill")
                 .font(.system(size: 11, weight: .semibold))
-            Text(row.waitingFor == nil ? "Done. Get back to me" : "I need your input")
+            Text(row.state == .needsInput
+                 ? (row.prompt.map { "Answer me: \($0)" } ?? "Waiting on your answer")
+                 : "Done. Get back to me")
                 .font(.system(size: 11.5, weight: .semibold))
                 .lineLimit(1)
             Spacer(minLength: 6)
@@ -561,7 +600,7 @@ private struct SessionRowView: View {
         .padding(.leading, 9)
         .padding(.trailing, 5)
         .padding(.vertical, 5)
-        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Palette.done))
+        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(accent))
         .padding(.top, 4)
     }
 
@@ -572,7 +611,7 @@ private struct SessionRowView: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(row.title)
-                        .font(.system(size: 12.5, weight: row.state == .needsYou ? .semibold : .medium))
+                        .font(.system(size: 12.5, weight: row.wantsYou ? .semibold : .medium))
                         .foregroundStyle(row.state == .idle ? Palette.text2 : Palette.text)
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -607,7 +646,7 @@ private struct SessionRowView: View {
                 if showGit, row.git != nil || row.pr != nil || !pullRequests.isEmpty {
                     gitLine
                 }
-                if row.state == .needsYou {
+                if row.wantsYou {
                     doneBanner
                 }
             }
@@ -616,13 +655,13 @@ private struct SessionRowView: View {
         .padding(.vertical, 7)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(row.state == .needsYou
-                      ? Palette.done.opacity(hovering ? 0.16 : 0.09)
+                .fill(row.wantsYou
+                      ? accent.opacity(hovering ? 0.16 : 0.09)
                       : (hovering ? Palette.raised : Color.clear))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(row.state == .needsYou ? Palette.done.opacity(0.35) : Color.clear, lineWidth: 1)
+                .strokeBorder(row.wantsYou ? accent.opacity(0.4) : Color.clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
@@ -630,7 +669,7 @@ private struct SessionRowView: View {
         .help(tooltip)
         .contextMenu {
             if row.desktopId != nil { Button("Open in Claude", action: action) }
-            if row.state == .needsYou { Button("Mark as seen", action: dismiss) }
+            if row.wantsYou { Button("Mark as seen", action: dismiss) }
             Button("Show project in Finder") {
                 NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: row.cwd)
             }
@@ -696,7 +735,7 @@ private struct SessionRowView: View {
 
     private func trailing(now: Date) -> String {
         switch row.state {
-        case .needsYou: return ""
+        case .needsYou, .needsInput: return ""
         case .working: return "working"
         case .idle: return Format.ago(row.lastActivity, now: now)
         }
@@ -704,6 +743,7 @@ private struct SessionRowView: View {
 
     private var trailingColor: Color {
         switch row.state {
+        case .needsInput: return Palette.attention
         case .needsYou: return Palette.done
         case .working: return Palette.working
         case .idle: return Palette.text3
@@ -732,6 +772,8 @@ private struct StatusDot: View {
             case .working:
                 PulseHalo().frame(width: 8, height: 8)
                 Circle().fill(Palette.working).frame(width: 8, height: 8)
+            case .needsInput:
+                Circle().fill(Palette.attention).frame(width: 8, height: 8)
             case .needsYou:
                 Circle().fill(Palette.done).frame(width: 8, height: 8)
             case .idle:

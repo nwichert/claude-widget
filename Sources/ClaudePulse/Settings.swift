@@ -35,6 +35,12 @@ final class Settings: ObservableObject {
     /// renaming a hidden chat brings it back.
     @Published var hiddenChats: [String] { didSet { defaults.set(hiddenChats, forKey: Key.hiddenChats) } }
 
+    /// What macOS says about this app's notifications: "authorized", "denied", "notDetermined" or "unknown".
+    /// Not a preference; refreshed from the system.
+    @Published var notificationAccess = "unknown" {
+        didSet { defaults.set(notificationAccess, forKey: "notificationAccess") }
+    }
+
     private let defaults = UserDefaults.standard
 
     private init() {

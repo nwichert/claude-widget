@@ -29,6 +29,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let i = CommandLine.arguments.firstIndex(of: "--ax-watch"), CommandLine.arguments.count > i + 2 {
+            let path = CommandLine.arguments[i + 1]
+            let seconds = Int(CommandLine.arguments[i + 2]) ?? 60
+            DispatchQueue.global().async { [chats] in
+                chats.watch(to: path, seconds: seconds)
+                DispatchQueue.main.async { NSApp.terminate(nil) }
+            }
+            return
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--chat-debug"), CommandLine.arguments.count > i + 1 {
             let path = CommandLine.arguments[i + 1]
             DispatchQueue.global().async { [chats] in
@@ -70,9 +79,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if canNotify {
             let center = UNUserNotificationCenter.current()
             center.delegate = self
-            center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+            center.requestAuthorization(options: [.alert, .sound]) { [weak self] _, _ in
+                self?.checkNotificationAccess()
+            }
+            // Access can be switched off in System Settings at any time; keep the panel honest about it.
+            Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
+                self?.checkNotificationAccess()
+            }
         }
 
+        store.sidebar = { [chats] in chats.sidebar }
         store.start()
         chats.start()
         artifacts.onNewMentions = { [weak self] item in self?.notifyMention(item) }
@@ -101,7 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func renderStatus(rows: [SessionRow]) {
         guard let button = statusItem.button else { return }
-        let waiting = rows.filter { $0.state == .needsYou }.count
+        let waiting = rows.filter { $0.wantsYou }.count
         let working = rows.filter { $0.state == .working }.count
         let symbol = waiting > 0 ? "circle.fill" : working > 0 ? "circle.dotted" : "circle"
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Claude sessions")?
@@ -199,14 +215,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     // MARK: - Notifications
 
+    private func checkNotificationAccess() {
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            let access: String
+            switch settings.authorizationStatus {
+            case .authorized, .provisional, .ephemeral:
+                // Allowed, but banners can still be turned off on their own.
+                access = settings.alertSetting == .disabled ? "bannersOff" : "authorized"
+            case .denied: access = "denied"
+            case .notDetermined: access = "notDetermined"
+            @unknown default: access = "unknown"
+            }
+            DispatchQueue.main.async {
+                if Settings.shared.notificationAccess != access { Settings.shared.notificationAccess = access }
+            }
+        }
+    }
+
     private func notify(_ row: SessionRow, reminder: Bool = false) {
         guard canNotify, reminder ? remindEnabled : notifyEnabled else { return }
         let content = UNMutableNotificationContent()
         content.title = row.title
+        let asking = row.state == .needsInput
         if reminder {
-            content.body = "Still waiting on you · \(Format.ago(row.lastActivity)) · \(row.project)"
+            content.body = "\(asking ? "Still waiting on your answer" : "Still waiting on you") · \(Format.ago(row.lastActivity)) · \(row.project)"
+        } else if asking {
+            content.body = (row.prompt.map { "Needs your answer: \($0)" } ?? "Needs your answer") + " · \(row.project)"
         } else {
-            content.body = row.waitingFor.map { "Waiting for \($0) · \(row.project)" } ?? "Finished · \(row.project)"
+            content.body = "Done. Get back to me · \(row.project)"
         }
         content.sound = .default
         if let url = row.openURL { content.userInfo = ["url": url.absoluteString] }

@@ -20,6 +20,15 @@ final class SessionStore: ObservableObject {
 
     /// Called on the main queue, once per waiting spell, when a session has sat waiting past `reminderDelay`.
     var onReminder: ((SessionRow) -> Void)?
+
+    /// Supplies the latest reading of Claude's sidebar, when Accessibility access allows one.
+    var sidebar: (() -> ChatReader.Sidebar?)?
+
+    /// Sessions that stopped while you were not looking, by id -> when. Claude Desktop's own
+    /// "last focused" time keeps moving for the selected session even while you are in another
+    /// app, so it cannot be trusted to say you saw a turn finish; this record can.
+    private var pending: [String: Double] =
+        (UserDefaults.standard.dictionary(forKey: "pendingAttention") as? [String: Double]) ?? [:]
     /// Zero means reminders are off.
     private var reminderDelay: TimeInterval {
         Double(Settings.int(Settings.Key.remindMinutes, default: 15)) * 60
@@ -74,6 +83,8 @@ final class SessionStore: ObservableObject {
         }
         UserDefaults.standard.set(seen, forKey: seenKey)
         if let i = rows.firstIndex(where: { $0.id == row.id }) { rows[i].state = .idle }
+        let id = row.id
+        queue.async { self.pending[id] = nil }
     }
 
     private let seenKey = "seenFinishedAt"
@@ -81,6 +92,10 @@ final class SessionStore: ObservableObject {
     /// Render aid: shows the second row as finished so the "done" look can be checked on demand.
     func debugForceDone() {
         if rows.count > 1 { rows[1].state = .needsYou }
+        if rows.count > 2 {
+            rows[2].state = .needsInput
+            rows[2].prompt = "Should the export include archived claims?"
+        }
     }
 
     // MARK: - Records
@@ -106,6 +121,9 @@ final class SessionStore: ObservableObject {
         var lastTurnEdge: Date?
         var archived: Bool
         var pr: PRInfo?
+        /// Claude's own after-turn verdict: "completed", "blocked", ...
+        var summaryCategory: String?
+        var needsAction: String?
     }
 
     private static func date(_ value: Any?) -> Date? {
@@ -173,6 +191,15 @@ final class SessionStore: ObservableObject {
                         let number = (p["prNumber"] as? String) ?? (p["prNumber"] as? NSNumber)?.stringValue ?? ""
                         return PRInfo(number: number, state: (p["state"] as? String) ?? "", url: url)
                     })
+                // Only trust the verdict if it is about the latest message.
+                if let summary = d["postTurnSummary"] as? [String: Any] {
+                    let about = summary["summarizes_uuid"] as? String
+                    let latest = d["lastAssistantUuid"] as? String
+                    if about == nil || latest == nil || about == latest {
+                        record?.summaryCategory = summary["status_category"] as? String
+                        record?.needsAction = summary["needs_action"] as? String
+                    }
+                }
             }
             desktopCache[path] = (mtime, record)
             if let record { out.append(record) }
@@ -203,9 +230,12 @@ final class SessionStore: ObservableObject {
             NSWorkspace.shared.frontmostApplication?.bundleIdentifier == claudeBundleID
         }
         // The session Claude Desktop is showing: you can already see it, so it never "needs you".
-        let onScreen: String? = claudeIsFront
+        var onScreen: String? = claudeIsFront
             ? desktop.max { ($0.lastFocused ?? .distantPast) < ($1.lastFocused ?? .distantPast) }?.sessionId
             : nil
+        // On the Claude (chat) tab no Code session is on screen, whatever was selected last.
+        let side = sidebar?().flatMap { now.timeIntervalSince($0.at) < 15 ? $0 : nil }
+        if side?.chatTab == true { onScreen = nil }
 
         var liveByHost: [String: LiveRecord] = [:]
         var liveByCli: [String: LiveRecord] = [:]
@@ -217,6 +247,7 @@ final class SessionStore: ObservableObject {
         var built: [SessionRow] = []
         var claimed = Set<String>()
         var prByRow: [String: PRInfo] = [:]
+        var promptByRow: [String: String] = [:]
         let remindAfter = reminderDelay
 
         for d in desktop where !d.archived {
@@ -225,20 +256,50 @@ final class SessionStore: ObservableObject {
             let activity = [d.lastActivity, d.lastTurnEdge, l?.updated].compactMap { $0 }.max() ?? .distantPast
             guard l != nil || now.timeIntervalSince(activity) < recentWindow else { continue }
 
-            var state = SessionState.idle
-            if l?.status == "busy" {
-                state = .working
-            } else if d.sessionId != onScreen {
-                let unread = d.lastTurnEdge.map { $0.timeIntervalSince(d.lastFocused ?? .distantPast) > 1 } ?? false
-                if l?.status == "waiting" || l?.waitingFor != nil || unread { state = .needsYou }
-            }
-
             let cwd = l?.cwd.nonEmpty ?? d.cwd ?? ""
             let cli = l?.sessionId ?? d.cliSessionId
+            let totals = cli.map { tally.totals(forSession: $0) } ?? TokenTotals()
+            let title = d.title?.nonEmpty ?? l?.name?.nonEmpty ?? (cwd as NSString).lastPathComponent
+            let visible = d.sessionId == onScreen
+
+            // Stopped mid-turn on a question or an approval. Two independent sources: the session's
+            // own status file, and the label Claude's sidebar shows while its Code tab is open.
+            let badge = side?.chatTab == false ? side?.badges[title]?.lowercased() : nil
+            let badgeWaiting = badge.map { $0.contains("await") || $0.contains("approval") || $0.contains("input") } ?? false
+            let blocked = l?.status == "waiting" || l?.waitingFor != nil || badgeWaiting
+
+            var state = SessionState.idle
+            var prompt: String?
+            if blocked {
+                pending[d.sessionId] = nil
+                if !visible {
+                    state = .needsInput
+                    prompt = l?.waitingFor == "dialog open" ? "Approval needed" : nil
+                }
+            } else if l?.status == "busy" {
+                pending[d.sessionId] = nil
+                state = .working
+            } else if visible {
+                pending[d.sessionId] = nil  // you are looking at it now
+            } else {
+                let wasActive = previous[d.sessionId] == .working || previous[d.sessionId] == .needsInput
+                if primed, wasActive, pending[d.sessionId] == nil {
+                    pending[d.sessionId] = now.timeIntervalSince1970
+                }
+                let unread = d.lastTurnEdge.map { $0.timeIntervalSince(d.lastFocused ?? .distantPast) > 1 } ?? false
+                if pending[d.sessionId] != nil || unread {
+                    // Finished. Orange if the turn ended by asking you something, green otherwise.
+                    let flagged = d.summaryCategory.map { $0 != "completed" } ?? false
+                    let action = d.needsAction?.nonEmpty
+                    let asked = flagged || action != nil || totals.endsWithQuestion
+                    state = asked ? .needsInput : .needsYou
+                    prompt = action
+                }
+            }
             prByRow[d.sessionId] = d.pr
             built.append(SessionRow(
                 id: d.sessionId,
-                title: d.title?.nonEmpty ?? l?.name?.nonEmpty ?? (cwd as NSString).lastPathComponent,
+                title: title,
                 project: (cwd as NSString).lastPathComponent,
                 cwd: cwd,
                 model: d.model.map(Format.model) ?? "",
@@ -248,13 +309,14 @@ final class SessionStore: ObservableObject {
                 desktopId: d.sessionId,
                 cliSessionId: cli,
                 isLive: l != nil,
-                tokens: cli.map { tally.totals(forSession: $0) } ?? TokenTotals()))
+                tokens: totals))
+            promptByRow[d.sessionId] = prompt
         }
 
         // Sessions running outside Claude Desktop (a terminal, an IDE).
         for l in live where !claimed.contains(l.sessionId) {
             let state: SessionState = l.status == "busy" ? .working
-                : (l.status == "waiting" || l.waitingFor != nil) ? .needsYou : .idle
+                : (l.status == "waiting" || l.waitingFor != nil) ? .needsInput : .idle
             built.append(SessionRow(
                 id: l.sessionId,
                 title: l.name?.nonEmpty ?? (l.cwd as NSString).lastPathComponent,
@@ -272,7 +334,7 @@ final class SessionStore: ObservableObject {
 
         // Sessions you dismissed stay quiet until they finish another turn.
         let seen = (UserDefaults.standard.dictionary(forKey: seenKey) as? [String: Double]) ?? [:]
-        for i in built.indices where built[i].state == .needsYou {
+        for i in built.indices where built[i].wantsYou {
             if let at = seen[built[i].id], built[i].lastActivity.timeIntervalSince1970 <= at + 1 {
                 built[i].state = .idle
             }
@@ -295,24 +357,30 @@ final class SessionStore: ObservableObject {
             built[i].contextWindow = window(for: built[i])
             built[i].git = git.info(for: built[i].cwd)
             built[i].pr = prByRow[built[i].id]
+            built[i].prompt = promptByRow[built[i].id]
         }
 
         var finished: [SessionRow] = []
         if primed {
-            for row in built where previous[row.id] == .working && row.state != .working && row.id != onScreen {
-                finished.append(row)
+            // Anything that newly wants you: finished, stopped on a prompt, or a done turn that turned
+            // out to be a question. Rows seen for the first time are not news.
+            for row in built where row.wantsYou && row.id != onScreen {
+                if let before = previous[row.id], before != row.state { finished.append(row) }
             }
         }
         // One follow-up per waiting spell. Spells already overdue at launch are marked as handled,
         // so starting the app never produces a burst of stale reminders.
         var overdue: [SessionRow] = []
-        for row in built where remindAfter > 0 && row.state == .needsYou
+        for row in built where remindAfter > 0 && row.wantsYou
             && now.timeIntervalSince(row.lastActivity) >= remindAfter
             && reminded[row.id] != row.lastActivity {
             reminded[row.id] = row.lastActivity
             if primed { overdue.append(row) }
         }
-        let waitingIds = Set(built.filter { $0.state == .needsYou }.map(\.id))
+        let waitingIds = Set(built.filter { $0.wantsYou }.map(\.id))
+        let liveIds = Set(built.map(\.id))
+        pending = pending.filter { liveIds.contains($0.key) }
+        UserDefaults.standard.set(pending, forKey: "pendingAttention")
         reminded = reminded.filter { waitingIds.contains($0.key) }
 
         previous = Dictionary(built.map { ($0.id, $0.state) }, uniquingKeysWith: { first, _ in first })
