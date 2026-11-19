@@ -40,7 +40,7 @@ final class Settings: ObservableObject {
     ]
 
     /// How often to send Claude's window to Duet for a look while a Duet task is running and Duet
-    /// is not on screen; 0 never does.
+    /// is not on screen; 0 never does. The first look after you leave Duet comes after a minute.
     @Published var duetPeekMinutes: Int { didSet { defaults.set(duetPeekMinutes, forKey: Key.duetPeekMinutes) } }
 
     /// Off unless you switch it on: record the front app, window title and visible text so a
@@ -141,7 +141,7 @@ final class Settings: ObservableObject {
         collapsedSections = UserDefaults.standard.stringArray(forKey: "collapsedSections") ?? ["skills", "usage"]
         dismissedIdeas = UserDefaults.standard.stringArray(forKey: Key.dismissedIdeas) ?? []
         hiddenChats = UserDefaults.standard.stringArray(forKey: Key.hiddenChats) ?? []
-        duetPeekMinutes = Self.int(Key.duetPeekMinutes, default: 5)
+        duetPeekMinutes = Self.int(Key.duetPeekMinutes, default: 2)
         observeScreen = Self.bool(Key.observeScreen, default: false)
         observeExcludedApps = Self.excludedApps()
         observeRetentionDays = Self.int(Key.observeRetentionDays, default: 7)

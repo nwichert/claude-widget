@@ -1879,8 +1879,7 @@ private struct ArtifactRowView: View {
                     Spacer(minLength: 4)
                     Text(trailing)
                         .font(.system(size: 10 * scale, weight: waiting > 0 || item.newShareAt != nil || item.hasNewComments ? .medium : .regular))
-                        .foregroundStyle(waiting > 0 || item.newShareAt != nil ? Palette.attention
-                                         : item.hasNewComments ? Palette.text2 : Palette.text3)
+                        .foregroundStyle(wantsYou ? Palette.attention : Palette.text3)
                         .monospacedDigit()
                         .fixedSize()
                     if hovering, let dismiss {
@@ -1907,13 +1906,21 @@ private struct ArtifactRowView: View {
         .padding(.vertical, 5 * scale)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(hovering ? Palette.raised : Color.clear)
+                .fill(wantsYou ? Palette.attention.opacity(hovering ? 0.16 : 0.09)
+                      : (hovering ? Palette.raised : Color.clear))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(wantsYou ? Palette.attention.opacity(0.4) : Color.clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture(perform: open)
         .help(tooltip)
     }
+
+    /// Something new for you here: a tag, a new share, or a comment you have not seen.
+    private var wantsYou: Bool { waiting > 0 || item.newShareAt != nil || item.hasNewComments }
 
     private var trailing: String {
         if waiting > 0 { return waiting == 1 ? "1 tag for you" : "\(waiting) tags for you" }
@@ -2087,10 +2094,10 @@ private struct SettingsView: View {
             if settings.showDuet {
                 section("Duet") {
                     choice("Look in on running tasks", $settings.duetPeekMinutes,
-                           [(0, "Off"), (3, "3m"), (5, "5m"), (10, "10m")])
+                           [(0, "Off"), (1, "1m"), (2, "2m"), (5, "5m")])
                     note(settings.duetPeekMinutes == 0
-                         ? "Pulse only sees Duet while it's on screen, so a task that needs you can sit unnoticed while you're in a Code session."
-                         : "Pulse only sees Duet while it's on screen. While a task is running, Claude's window flips to Duet for a few seconds and back to your Code session, so you hear about it when the task needs you. It waits if you're using Claude.")
+                         ? "Pulse only sees Duet while it's on screen, so a task that needs you can sit unnoticed while you're somewhere else in Claude."
+                         : "Pulse only sees Duet while it's on screen. A minute after you leave Duet, and then this often while a task is running, Claude's window flips to Duet for a few seconds and back to where you were, so you hear about it when a task needs you. It waits for a pause if you're using Claude.")
                 }
             }
             screenActivity

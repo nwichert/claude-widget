@@ -104,6 +104,9 @@ final class ChatReader: ObservableObject {
     /// When Duet's tasks were last read, and when the window was last sent to look. Reader queue only.
     private var lastDuetReadAt = Date.distantPast
     private var lastPeekAt = Date.distantPast
+    /// False from the moment Duet is seen on screen until a look-in has checked on it since.
+    private var checkedSinceVisit = false
+    private var lastPeekNote = ""
     private var lastSpaces: [DuetSpace] = []
     /// Claude's own live usage figure, read off the usage ring whenever a page that shows it is open.
     @Published private(set) var liveUsage: LiveUsage?
@@ -334,10 +337,14 @@ final class ChatReader: ObservableObject {
                 // The heading above is a status in a channel's own list but the channel's name in
                 // "Everything", and the label puts the status before or after the title. So prefer
                 // a status Duet is known to use, wherever it sits in the label.
-                var status = full.components(separatedBy: ", ").first(where: Self.isDuetStatus) ?? ""
+                // "Everything" appends where the task lives: "Ready for review. Task in x channel".
+                var status = full.components(separatedBy: ", ")
+                    .map { $0.components(separatedBy: ". ").first ?? $0 }
+                    .first(where: Self.isDuetStatus) ?? ""
                 if !status.isEmpty {
                     let lead = "\(title), \(status), "
                     if full.hasPrefix(lead) { summary = String(full.dropFirst(lead.count)) }
+                    if summary?.hasPrefix("Task in ") == true { summary = nil }
                 } else if full.hasPrefix(title + ", ") {
                     let rest = full.dropFirst(title.count + 2)
                     if let comma = rest.range(of: ", ") {
@@ -444,6 +451,7 @@ final class ChatReader: ObservableObject {
         }
         let now = Date()
         lastDuetReadAt = now
+        if !peeking { checkedSinceVisit = false }
         if let data = try? JSONEncoder().encode(tasks) {
             UserDefaults.standard.set(data, forKey: duetKey)
             UserDefaults.standard.set(now.timeIntervalSince1970, forKey: duetSeenKey)
@@ -551,32 +559,50 @@ final class ChatReader: ObservableObject {
     }
 
     /// Duet can only be read while it is on screen, so a task that starts needing input while you
-    /// are in a Code session would go unnoticed. While a task is known to be running, this sends
-    /// Claude's window to Duet for a moment every few minutes, reads the list, and puts it back.
+    /// are elsewhere in Claude would go unnoticed. This sends Claude's window to Duet for a moment,
+    /// reads the list, and puts the window back.
     ///
-    /// It only does so from a Code session, which can be returned to exactly, and never while you
-    /// are using Claude: the window would change under your hands and your typing would land in Duet.
+    /// It looks once about a minute after Duet leaves the screen with a task running or waiting on
+    /// you: answering a question or starting a task changes a status a moment after you walk away,
+    /// and that is the reading everything later is compared with. After that it looks every few
+    /// minutes for as long as a task is running.
+    ///
+    /// It never does so while you are using Claude: the window would change under your hands and
+    /// your typing would land in Duet.
     private func peekAtDuetIfDue(_ root: AXUIElement, trace: ((String) -> Void)? = nil, force: Bool = false) {
-        let minutes = Settings.int(Settings.Key.duetPeekMinutes, default: 5)
+        let minutes = Settings.int(Settings.Key.duetPeekMinutes, default: 2)
         guard force || minutes > 0 else { return }
         let interval = TimeInterval(max(1, minutes) * 60)
         let now = Date()
-        if !force {
-            guard lastTasks.contains(where: \.isWorking),
-                  now.timeIntervalSince(lastDuetReadAt) >= interval,
-                  now.timeIntervalSince(lastPeekAt) >= interval else { return }
+        func note(_ text: String) {
+            trace?(text)
+            guard !force, text != lastPeekNote else { return }
+            lastPeekNote = text
+            Self.logPeek(text)
         }
         guard duetPage(root) == nil else { return }
-        guard let scan = scanSidebar(root), !scan.chatTab else { trace?("not on a Code session; leaving the window alone"); return }
+        if !force {
+            guard lastDuetReadAt != .distantPast, now.timeIntervalSince(lastPeekAt) >= 60 else { return }
+            let sinceRead = now.timeIntervalSince(lastDuetReadAt)
+            let working = lastTasks.contains(where: \.isWorking)
+            let followUp = !checkedSinceVisit && sinceRead >= 60
+                && lastTasks.contains(where: { $0.isWorking || $0.needsInput })
+            guard followUp || (working && sinceRead >= interval) else {
+                if !working, checkedSinceVisit || lastTasks.isEmpty { note("nothing running in Duet; not looking") }
+                return
+            }
+        }
+        guard let scan = scanSidebar(root) else { note("can't tell where Claude's window is; leaving it alone"); return }
+        let fromChat = scan.chatTab
         let claudeIsFront = DispatchQueue.main.sync {
             NSWorkspace.shared.frontmostApplication?.bundleIdentifier == claudeBundleID
         }
         if claudeIsFront, let anyInput = CGEventType(rawValue: ~0) {
             let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyInput)
-            guard idle >= 20 else { trace?("you are using Claude; not now"); return }
+            guard idle >= 10 else { note("due, but you are using Claude; waiting for a pause"); return }
         }
         lastPeekAt = now
-        trace?("looking in on Duet")
+        note("looking in on Duet from \(fromChat ? "the Claude tab" : "a Code session")")
 
         navigateToDuet(root, trace: trace)
         showDuetSpace(nil, root: root, trace: trace)
@@ -617,12 +643,24 @@ final class ChatReader: ObservableObject {
             }
             trace?("task list ready: \(ready)")
             readDuet(root, trace: trace, peeking: true)
+            checkedSinceVisit = true
+            lastPeekNote = ""
+            Self.logPeek("looked: " + (lastTasks.isEmpty ? "no tasks" : lastTasks.map { "\($0.status)" }.joined(separator: ", ")))
         } else {
-            trace?("Duet did not open")
+            note("Duet did not open")
         }
 
-        // Back to the Code session, without bringing Claude in front of whatever you are doing.
-        if let url = URL(string: "claude://code/continue?session=last") {
+        if fromChat {
+            // Duet's own way back goes to whatever the Claude tab was showing.
+            let back = duetPage(root).flatMap { page in
+                find(in: page, budget: 200, where: { e in
+                    self.attr(e, kAXRoleAttribute) as? String == "AXButton" && self.label(e) == "Back to Claude"
+                })
+            }
+            let pressed = back.map { AXUIElementPerformAction($0, kAXPressAction as CFString) == .success } ?? false
+            trace?("pressed Back to Claude: \(pressed)")
+        } else if let url = URL(string: "claude://code/continue?session=last") {
+            // Back to the Code session, without bringing Claude in front of whatever you are doing.
             DispatchQueue.main.async {
                 let quiet = NSWorkspace.OpenConfiguration()
                 quiet.activates = false
@@ -632,11 +670,37 @@ final class ChatReader: ObservableObject {
         }
     }
 
+    /// A short record of when the look-in ran or why it held off, with statuses but no task names:
+    /// ~/Library/Application Support/ClaudePulse/duet-lookin.log, kept to its last 200 lines.
+    private static func logPeek(_ text: String) {
+        let file = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/ClaudePulse/duet-lookin.log")
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        var lines = ((try? String(contentsOf: file, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+        lines.append("\(stamp) \(text)")
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? (lines.suffix(200).joined(separator: "\n") + "\n").write(to: file, atomically: true, encoding: .utf8)
+    }
+
     /// Diagnostic: one background look at Duet right now, whatever the timer says.
     func debugDuetPeek(trace: @escaping (String) -> Void) {
         queue.async { [weak self] in
             guard let self, let root = self.claudeRoot() else { trace("no Claude window"); return }
+            // `--from-chat` starts the look from the Claude tab instead of a Code session.
+            if CommandLine.arguments.contains("--from-chat"), let scan = self.scanSidebar(root),
+               !scan.chatTab, let tab = scan.chatTabButton {
+                AXUIElementPerformAction(tab, kAXPressAction as CFString)
+                Thread.sleep(forTimeInterval: 1.5)
+            }
             self.peekAtDuetIfDue(root, trace: trace, force: true)
+            Thread.sleep(forTimeInterval: 2.5)
+            let page = ((self.attr(root, kAXWindowsAttribute) as? [AXUIElement]) ?? []).compactMap { window in
+                self.find(in: window, budget: 80, maxDepth: 12, where: { e in
+                    self.attr(e, kAXRoleAttribute) as? String == "AXWebArea"
+                        && ((self.attr(e, kAXURLAttribute) as? URL)?.host == "claude.ai")
+                })
+            }.first
+            trace("window is now at: " + ((page.flatMap { self.attr($0, kAXURLAttribute) as? URL })?.path.prefix(24).description ?? "-"))
             trace("tasks now: " + self.lastTasks.map { "\($0.title.prefix(30)) = \($0.status) in \($0.space ?? "main")" }.joined(separator: "; "))
         }
     }
