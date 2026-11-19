@@ -122,6 +122,24 @@ final class ChatReader: ObservableObject {
 
     /// Called on the main queue when a Duet task is seen needing input for the first time.
     var onDuetNeedsInput: ((DuetTask) -> Void)?
+    /// Chats with an answer you have not been back to read, by title, with when it was noticed.
+    @Published private(set) var waitingChats: [String: Date] = [:]
+    /// Called on the main thread with the chat's title; `leftEarly` when you walked away before
+    /// Claude finished, so the answer is presumed rather than seen.
+    var onChatAnswered: ((_ title: String, _ leftEarly: Bool) -> Void)?
+    /// Called on the main thread when an answer has gone unread for the reminder interval.
+    var onChatReminder: ((String) -> Void)?
+    /// Reader queue only. Chats seen answering, chats you left mid-answer, and chats with an
+    /// answer waiting, all keyed by the chat's id from its address.
+    private var chatsAnswering: [String: String] = [:]
+    private var chatsLeft: [String: (title: String, at: Date)] = [:]
+    private var chatsWaiting: [String: (title: String, at: Date, reminded: Bool)] = [:]
+
+    /// For `--snapshot --demo-chat-answer`: pretend a chat has an answer waiting.
+    func demoWaitingChat(_ title: String) {
+        waitingChats[title] = Date()
+        queue.async { self.chatsWaiting["demo"] = (title, Date(), true) }
+    }
     /// Titles already known to need input, so each task alerts once. Touched only on the reader queue.
     private var duetAlerted: Set<String>?
     private let duetKey = "duetTasks"
@@ -225,6 +243,7 @@ final class ChatReader: ObservableObject {
             readDuet(root)
             peekAtDuetIfDue(root)
         }
+        trackChatAnswers(root)
         // The ring sits deep in the page, so finding it is the costliest read here: every third pass.
         tickCount += 1
         if tickCount % 3 == 1, Settings.bool(Settings.Key.showUsage, default: true) { readUsage(root) }
@@ -248,6 +267,135 @@ final class ChatReader: ObservableObject {
         DispatchQueue.main.async {
             if self.chats != items { self.chats = items }
             self.seenAt = now
+        }
+    }
+
+    // MARK: - Answers you walked away from
+
+    /// The chat on screen, if one is: its id, its title, and whether Claude is still answering.
+    private func openChat(_ root: AXUIElement) -> (id: String, title: String, answering: Bool)? {
+        for window in (attr(root, kAXWindowsAttribute) as? [AXUIElement]) ?? [] {
+            guard let page = find(in: window, budget: 60, maxDepth: 12, where: { e in
+                guard self.attr(e, kAXRoleAttribute) as? String == "AXWebArea",
+                      let url = self.attr(e, kAXURLAttribute) as? URL else { return false }
+                return url.host == "claude.ai" && url.path.hasPrefix("/chat/") && url.lastPathComponent.count > 8
+            }), let url = attr(page, kAXURLAttribute) as? URL else { continue }
+            guard let pane = find(in: page, budget: 1_200, where: { e in
+                self.attr(e, kAXSubroleAttribute) as? String == "AXLandmarkRegion" && self.label(e) == "Primary pane"
+            }), let heading = find(in: pane, budget: 60, where: { e in
+                self.attr(e, kAXRoleAttribute) as? String == "AXHeading"
+            }) else { continue }
+            let title = label(heading).isEmpty ? (staticTexts(in: heading, depth: 0).first ?? "") : label(heading)
+            guard !title.isEmpty else { continue }
+
+            // The newest message is the last one in the pane, so look from the end. While Claude
+            // is answering it is labelled "Currently streaming message"; just after you send, the
+            // newest message is still your own.
+            var left = 1_500
+            func lastMessage(_ e: AXUIElement, _ depth: Int) -> AXUIElement? {
+                left -= 1
+                guard left > 0, depth < 40 else { return nil }
+                if attr(e, kAXSubroleAttribute) as? String == "AXDocumentArticle" { return e }
+                for child in children(e).reversed() {
+                    if let found = lastMessage(child, depth + 1) { return found }
+                }
+                return nil
+            }
+            guard let message = lastMessage(pane, 0) else { return (url.lastPathComponent, title, false) }
+            var answering = label(message).lowercased().contains("streaming")
+            if !answering, let said = find(in: message, budget: 40, where: { e in
+                self.attr(e, kAXRoleAttribute) as? String == "AXHeading"
+            }) {
+                answering = label(said).hasPrefix("You said")
+            }
+            return (url.lastPathComponent, title, answering)
+        }
+        return nil
+    }
+
+    /// Notices a chat you asked something and then left, and says so once the answer is in.
+    ///
+    /// A chat can only be read while it is on screen. If it stays on screen while you work in
+    /// another app, the end of the answer is seen and reported as it happens. If you move Claude's
+    /// window somewhere else mid-answer, the end cannot be seen, so the chat is reported two
+    /// minutes later as probably answered. Either way it stays marked until you open it again.
+    private func trackChatAnswers(_ root: AXUIElement, trace: ((String) -> Void)? = nil) {
+        let now = Date()
+        let chat = openChat(root)
+        trace?(chat.map { "chat on screen: \($0.title.prefix(40)), answering: \($0.answering)" } ?? "no chat on screen")
+        let here: Bool = {
+            let front = DispatchQueue.main.sync {
+                NSWorkspace.shared.frontmostApplication?.bundleIdentifier == claudeBundleID
+            }
+            guard front, let anyInput = CGEventType(rawValue: ~0) else { return false }
+            return CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyInput) < 120
+        }()
+        var answered: [(String, Bool)] = []
+
+        if let chat {
+            if chat.answering {
+                chatsAnswering[chat.id] = chat.title
+                chatsLeft[chat.id] = nil
+                chatsWaiting[chat.id] = nil
+            } else {
+                // The answer finished with the chat on screen. That is only news if you were not looking.
+                if chatsAnswering.removeValue(forKey: chat.id) != nil || chatsLeft.removeValue(forKey: chat.id) != nil {
+                    if !here {
+                        chatsWaiting[chat.id] = (chat.title, now, false)
+                        answered.append((chat.title, false))
+                    }
+                } else if here {
+                    chatsWaiting[chat.id] = nil
+                }
+            }
+        }
+        // Anything that was answering and is no longer the chat on screen has been walked away from.
+        for (id, title) in chatsAnswering where id != chat?.id {
+            chatsAnswering[id] = nil
+            chatsLeft[id] = (title, now)
+        }
+        for (id, left) in chatsLeft where now.timeIntervalSince(left.at) >= 120 {
+            chatsLeft[id] = nil
+            chatsWaiting[id] = (left.title, now, false)
+            answered.append((left.title, true))
+        }
+        // One nudge later, on the same timer as sessions, if you still have not been back.
+        let remind = TimeInterval(Settings.int(Settings.Key.remindMinutes, default: 15) * 60)
+        var reminders: [String] = []
+        if remind > 0 {
+            for (id, waiting) in chatsWaiting where !waiting.reminded && now.timeIntervalSince(waiting.at) >= remind {
+                chatsWaiting[id]?.reminded = true
+                reminders.append(waiting.title)
+            }
+        }
+
+        let waiting = Dictionary(chatsWaiting.values.map { ($0.title, $0.at) }, uniquingKeysWith: { first, _ in first })
+        DispatchQueue.main.async {
+            if self.waitingChats != waiting { self.waitingChats = waiting }
+            answered.forEach { self.onChatAnswered?($0.0, $0.1) }
+            reminders.forEach { self.onChatReminder?($0) }
+        }
+    }
+
+    /// Forgets that a chat has an answer waiting, without opening it.
+    func dismissWaitingChat(_ title: String) {
+        waitingChats[title] = nil
+        queue.async { [weak self] in
+            guard let self else { return }
+            for (id, waiting) in self.chatsWaiting where waiting.title == title { self.chatsWaiting[id] = nil }
+        }
+    }
+
+    /// Diagnostic: follows the chat on screen for a while, saying what the tracker sees.
+    func debugChatAnswers(seconds: Int, trace: @escaping (String) -> Void) {
+        queue.async { [weak self] in
+            for _ in 0..<max(1, seconds / 2) {
+                guard let self, let root = self.claudeRoot() else { trace("no Claude window"); return }
+                self.trackChatAnswers(root, trace: trace)
+                trace("  answering \(self.chatsAnswering.count), left \(self.chatsLeft.count), waiting \(self.chatsWaiting.count)")
+                Thread.sleep(forTimeInterval: 2)
+            }
+            trace("done")
         }
     }
 

@@ -640,10 +640,15 @@ struct PanelView: View {
     @ViewBuilder private var chatSection: some View {
         let hidden = Set(settings.hiddenChats)
         // Hidden chats are dropped before the limit is applied, so hiding one pulls the next one up.
-        let available = chats.chats.filter { !hidden.contains($0.title) }
+        // Chats with an answer you have not read go first, whether or not the list has caught up
+        // with them (it is only refreshed while the Claude tab is open) and even if hidden.
+        let answered = chats.waitingChats.sorted { $0.value > $1.value }.map { waiting in
+            chats.chats.first { $0.title == waiting.key } ?? ChatItem(title: waiting.key, badge: nil)
+        }
+        let available = chats.chats.filter { !hidden.contains($0.title) && chats.waitingChats[$0.title] == nil }
         let visible = Array(available.prefix(layout.chatLimit))
         VStack(alignment: .leading, spacing: 1) {
-            sectionHeader("CHATS", id: "chats", count: available.count) {
+            sectionHeader("CHATS", id: "chats", count: available.count + answered.count) {
                 if !hidden.isEmpty {
                     Text("· \(hidden.count) hidden")
                         .font(.system(size: 10 * scale))
@@ -664,8 +669,15 @@ struct PanelView: View {
             }
 
             if !settings.isCollapsed("chats") {
+            ForEach(answered) { chat in
+                ChatRowView(chat: chat, answered: true,
+                            open: { chats.open(chat) },
+                            hide: { chats.dismissWaitingChat(chat.title) })
+            }
             if !chats.trusted {
                 hint("Allow Accessibility access to list chats", action: chats.requestAccess)
+            } else if !answered.isEmpty, visible.isEmpty {
+                EmptyView()
             } else if chats.chats.isEmpty {
                 hint("Open the Claude tab once to load your chats", action: nil)
             } else if visible.isEmpty {
@@ -1961,12 +1973,14 @@ private struct ArtifactRowView: View {
 private struct ChatRowView: View {
     @Environment(\.uiScale) private var scale
     let chat: ChatItem
+    var answered = false
     let open: () -> Void
     let hide: () -> Void
     @State private var hovering = false
 
-    /// Claude marks the chat as waiting on you: an answer, an approval.
+    /// Claude marks the chat as waiting on you, or it holds an answer you have not been back to read.
     private var needsYou: Bool {
+        if answered { return true }
         guard let badge = chat.badge?.lowercased() else { return false }
         return badge.contains("await") || badge.contains("approval") || badge.contains("input") || badge.contains("needs")
     }
@@ -1978,18 +1992,23 @@ private struct ChatRowView: View {
                 .foregroundStyle(Palette.text3)
                 .frame(width: 12 * scale)
             Text(chat.title)
-                .font(.system(size: 12 * scale))
-                .foregroundStyle(Palette.text2)
+                .font(.system(size: 12 * scale, weight: answered ? .semibold : .regular))
+                .foregroundStyle(answered ? Palette.text : Palette.text2)
                 .lineLimit(1)
             Spacer(minLength: 4)
             if hovering {
-                Image(systemName: "eye.slash")
+                Image(systemName: answered ? "xmark" : "eye.slash")
                     .font(.system(size: 10 * scale))
                     .foregroundStyle(Palette.text2)
                     .frame(width: 18, height: 14)
                     .contentShape(Rectangle())
                     .onTapGesture(perform: hide)
-                    .help("Hide this chat from the panel")
+                    .help(answered ? "Clear without opening" : "Hide this chat from the panel")
+            } else if answered {
+                Text("answer waiting")
+                    .font(.system(size: 10 * scale, weight: .medium))
+                    .foregroundStyle(Palette.attention)
+                    .fixedSize()
             } else if let badge = chat.badge {
                 Text(badge.replacingOccurrences(of: "Includes an artifact", with: "artifact"))
                     .font(.system(size: 10 * scale))
@@ -2014,7 +2033,7 @@ private struct ChatRowView: View {
         .onTapGesture(perform: open)
         .contextMenu {
             Button("Open in Claude", action: open)
-            Button("Hide from panel", action: hide)
+            Button(answered ? "Clear" : "Hide from panel", action: hide)
         }
     }
 }
@@ -2145,6 +2164,7 @@ private struct SettingsView: View {
                         }
                         toggle("Artifact tags and new shares", $settings.notifyArtifacts)
                         toggle("Duet tasks needing input", $settings.notifyDuet)
+                        toggle("Chat answers you walked away from", $settings.notifyChats)
                     }
                     .padding(.leading, 12)
                 } else {

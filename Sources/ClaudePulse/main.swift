@@ -67,6 +67,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return
         }
         // Diagnostic: one background look at Duet right now, from a Code session and back.
+        // Diagnostic: `--chat-answer-debug out.txt [seconds]` follows the chat on screen.
+        if let i = CommandLine.arguments.firstIndex(of: "--chat-answer-debug"), CommandLine.arguments.count > i + 1 {
+            let path = CommandLine.arguments[i + 1]
+            let seconds = CommandLine.arguments.indices.contains(i + 2) ? Int(CommandLine.arguments[i + 2]) ?? 20 : 20
+            var lines: [String] = []
+            chats.debugChatAnswers(seconds: seconds) { line in
+                lines.append(line)
+                try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+                if line == "done" || line == "no Claude window" { DispatchQueue.main.async { NSApp.terminate(nil) } }
+            }
+            return
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--duet-peek-debug"), CommandLine.arguments.count > i + 1 {
             let path = CommandLine.arguments[i + 1]
             var lines: [String] = []
@@ -215,6 +227,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         artifacts.onNewMentions = { [weak self] item in self?.notifyMention(item) }
         artifacts.onNewShare = { [weak self] item in self?.notifyShare(item) }
         chats.onDuetNeedsInput = { [weak self] task in self?.notifyDuet(task) }
+        chats.onChatAnswered = { [weak self] title, leftEarly in self?.notifyChat(title, leftEarly: leftEarly) }
+        chats.onChatReminder = { [weak self] title in self?.notifyChat(title, leftEarly: false, reminder: true) }
         artifacts.start()
         github.start()
         insights.start()
@@ -223,6 +237,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // `ClaudePulse --snapshot out.png` renders the panel to a file and quits (for checking layout).
         if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), CommandLine.arguments.count > i + 1 {
             let path = CommandLine.arguments[i + 1]
+            if CommandLine.arguments.contains("--demo-chat-answer") { chats.demoWaitingChat("Quarterly numbers for the board") }
             if CommandLine.arguments.contains("--demo-done") {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) { [store] in store.debugForceDone() }
             }
@@ -411,6 +426,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             UNNotificationRequest(identifier: row.id, content: content, trigger: nil))
     }
 
+    private func notifyChat(_ title: String, leftEarly: Bool, reminder: Bool = false) {
+        guard canNotify, notifyEnabled, Settings.shared.notifyChats, Settings.shared.showChats,
+              !reminder || remindEnabled else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = reminder ? "Claude's answer is still waiting in this chat"
+            : leftEarly ? "You asked this chat something and left before Claude finished. The answer should be in."
+            : "Claude answered in this chat"
+        content.sound = .default
+        content.userInfo = ["chat": title]
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: "chat-" + title, content: content, trigger: nil))
+    }
+
     private func notifyDuet(_ task: DuetTask) {
         guard canNotify, notifyEnabled, Settings.shared.notifyDuet, Settings.shared.showDuet else { return }
         let content = UNMutableNotificationContent()
@@ -454,6 +483,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let info = response.notification.request.content.userInfo
+        if let title = info["chat"] as? String {
+            chats.open(ChatItem(title: title, badge: nil))
+            return
+        }
         if let title = info["duetTask"] as? String, let task = chats.duetTasks.first(where: { $0.title == title }) {
             chats.openDuet(task)
         } else if let s = info["url"] as? String, let url = URL(string: s) {

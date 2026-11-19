@@ -10,6 +10,7 @@ final class Settings: ObservableObject {
         static let notifySessions = "notifySessions"
         static let notifyArtifacts = "notifyArtifacts"
         static let notifyDuet = "notifyDuet"
+        static let notifyChats = "notifyChats"
         static let remindMinutes = "remindMinutes"
         static let recentHours = "recentHours"
         static let showGit = "showGit"
@@ -61,6 +62,8 @@ final class Settings: ObservableObject {
     @Published var notifySessions: Bool { didSet { defaults.set(notifySessions, forKey: Key.notifySessions) } }
     @Published var notifyArtifacts: Bool { didSet { defaults.set(notifyArtifacts, forKey: Key.notifyArtifacts) } }
     @Published var notifyDuet: Bool { didSet { defaults.set(notifyDuet, forKey: Key.notifyDuet) } }
+    /// A chat you asked something and left has its answer.
+    @Published var notifyChats: Bool { didSet { defaults.set(notifyChats, forKey: Key.notifyChats) } }
     /// Master switch for every notification Claude Pulse sends.
     @Published var notifyOnFinish: Bool { didSet { defaults.set(notifyOnFinish, forKey: Key.notify) } }
     /// Minutes a session may wait before one follow-up notification; 0 turns reminders off.
@@ -122,6 +125,7 @@ final class Settings: ObservableObject {
         notifySessions = Self.bool(Key.notifySessions, default: true)
         notifyArtifacts = Self.bool(Key.notifyArtifacts, default: true)
         notifyDuet = Self.bool(Key.notifyDuet, default: true)
+        notifyChats = Self.bool(Key.notifyChats, default: true)
         remindMinutes = Self.int(Key.remindMinutes, default: 15)
         recentHours = Self.int(Key.recentHours, default: 24)
         showGit = Self.bool(Key.showGit, default: true)
