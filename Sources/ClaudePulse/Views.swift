@@ -595,7 +595,8 @@ struct PanelView: View {
             ForEach(spaces) { space in
                 let own = rest.filter { $0.space == space.name }
                 let waiting = urgentDuetTasks.filter { $0.space == space.name }.count
-                DuetSpaceRowView(space: space, active: own.count, waiting: waiting,
+                let asking = urgentDuetTasks.contains { $0.space == space.name && $0.needsInput }
+                DuetSpaceRowView(space: space, active: own.count, waiting: waiting, asking: asking,
                                  working: own.filter(\.isWorking).count) { chats.openDuetSpace(space) }
                 ForEach(own.prefix(5)) { task in
                     DuetTaskRowView(task: task,
@@ -1560,6 +1561,8 @@ private struct DuetSpaceRowView: View {
     let active: Int
     /// Tasks of this channel or group that are up in "Needs you".
     let waiting: Int
+    /// A task in here is waiting on an answer from you.
+    var asking = false
     /// Tasks Claude is working on right now.
     var working = 0
     let open: () -> Void
@@ -1608,7 +1611,12 @@ private struct DuetSpaceRowView: View {
         .padding(.vertical, 4 * scale)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(hovering ? Palette.raised : Color.clear)
+                .fill(asking ? Palette.attention.opacity(hovering ? 0.16 : 0.09)
+                      : (hovering ? Palette.raised : Color.clear))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(asking ? Palette.attention.opacity(0.4) : Color.clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
@@ -1704,6 +1712,10 @@ struct DuetTaskRowView: View {
                 .fill(task.needsInput
                       ? Palette.attention.opacity(hovering ? 0.16 : 0.09)
                       : (hovering ? Palette.raised : Color.clear))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(task.needsInput ? Palette.attention.opacity(0.4) : Color.clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
@@ -1953,6 +1965,12 @@ private struct ChatRowView: View {
     let hide: () -> Void
     @State private var hovering = false
 
+    /// Claude marks the chat as waiting on you: an answer, an approval.
+    private var needsYou: Bool {
+        guard let badge = chat.badge?.lowercased() else { return false }
+        return badge.contains("await") || badge.contains("approval") || badge.contains("input") || badge.contains("needs")
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "bubble.left")
@@ -1975,7 +1993,7 @@ private struct ChatRowView: View {
             } else if let badge = chat.badge {
                 Text(badge.replacingOccurrences(of: "Includes an artifact", with: "artifact"))
                     .font(.system(size: 10 * scale))
-                    .foregroundStyle(Palette.text3)
+                    .foregroundStyle(needsYou ? Palette.attention : Palette.text3)
                     .lineLimit(1)
                     .fixedSize()
             }
@@ -1984,7 +2002,12 @@ private struct ChatRowView: View {
         .padding(.vertical, 5 * scale)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(hovering ? Palette.raised : Color.clear)
+                .fill(needsYou ? Palette.attention.opacity(hovering ? 0.16 : 0.09)
+                      : (hovering ? Palette.raised : Color.clear))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(needsYou ? Palette.attention.opacity(0.4) : Color.clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
