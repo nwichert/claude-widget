@@ -674,17 +674,7 @@ final class ChatReader: ObservableObject {
 
     /// Depth-first search for the first element matching a test, giving up after `budget` elements.
     private func find(in e: AXUIElement, budget: Int, maxDepth: Int = 40, where test: (AXUIElement) -> Bool) -> AXUIElement? {
-        var left = budget
-        func search(_ e: AXUIElement, _ depth: Int) -> AXUIElement? {
-            left -= 1
-            guard left > 0, depth < maxDepth else { return nil }
-            if test(e) { return e }
-            for child in children(e) {
-                if let found = search(child, depth + 1) { return found }
-            }
-            return nil
-        }
-        return search(e, 0)
+        AX.find(in: e, budget: budget, maxDepth: maxDepth, where: test)
     }
 
     private func claudeRoot() -> AXUIElement? {
@@ -709,21 +699,10 @@ final class ChatReader: ObservableObject {
         var rows: [(title: String, badge: String?, section: String)] = []
     }
 
-    private func attr(_ e: AXUIElement, _ name: String) -> AnyObject? {
-        var v: AnyObject?
-        return AXUIElementCopyAttributeValue(e, name as CFString, &v) == .success ? v : nil
-    }
-
-    private func children(_ e: AXUIElement) -> [AXUIElement] {
-        (attr(e, kAXChildrenAttribute) as? [AXUIElement]) ?? []
-    }
-
-    private func label(_ e: AXUIElement) -> String {
-        for name in [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute] {
-            if let s = attr(e, name) as? String, !s.isEmpty { return s }
-        }
-        return ""
-    }
+    // The shared helpers live in AXHelpers.swift; these keep the many call sites here short.
+    private func attr(_ e: AXUIElement, _ name: String) -> AnyObject? { AX.attr(e, name) }
+    private func children(_ e: AXUIElement) -> [AXUIElement] { AX.children(e) }
+    private func label(_ e: AXUIElement) -> String { AX.label(e) }
 
     private func staticTexts(in e: AXUIElement, depth: Int) -> [String] {
         guard depth < 4 else { return [] }

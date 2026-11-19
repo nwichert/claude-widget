@@ -18,6 +18,8 @@ struct Insights: Equatable, Decodable {
         var why: String
         /// A ready-made request that asks Claude to build the skill.
         var prompt: String
+        /// "screen" when the idea came from screen activity rather than from your prompts.
+        var source: String?
         var id: String { name }
     }
 

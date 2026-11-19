@@ -26,7 +26,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     var isVisible: Bool { panel.isVisible }
 
-    init(store: SessionStore, chats: ChatReader, artifacts: ArtifactStore, github: GitHubReader, insights: InsightsStore, open: @escaping (SessionRow) -> Void) {
+    init(store: SessionStore, chats: ChatReader, artifacts: ArtifactStore, github: GitHubReader, insights: InsightsStore, activity: ActivityObserver, open: @escaping (SessionRow) -> Void) {
         panel = FloatingPanel(
             contentRect: NSRect(x: 0, y: 0, width: PanelLayout.defaultWidth, height: 120),
             styleMask: [.borderless, .nonactivatingPanel, .resizable],
@@ -38,7 +38,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         let savedHeight = CGFloat(defaults.double(forKey: heightKey))
         layout.manualHeight = savedHeight >= Self.minSize.height
 
-        let host = ClickThroughHostingView(rootView: PanelView(store: store, layout: layout, chats: chats, artifacts: artifacts, github: github, insights: insights, open: open))
+        let host = ClickThroughHostingView(rootView: PanelView(store: store, layout: layout, chats: chats, artifacts: artifacts, github: github, insights: insights, activity: activity, open: open))
         // Report an ideal size for auto-fit, but never pin the window's min/max to it:
         // the window has to stay free to be dragged to any size.
         host.sizingOptions = [.intrinsicContentSize]
@@ -78,6 +78,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             .merge(with: artifacts.objectWillChange.map { _ in () })
             .merge(with: github.objectWillChange.map { _ in () })
             .merge(with: insights.objectWillChange.map { _ in () })
+            .merge(with: activity.objectWillChange.map { _ in () })
             .merge(with: Settings.shared.objectWillChange.map { _ in () })
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in

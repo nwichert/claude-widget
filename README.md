@@ -67,7 +67,7 @@ CODESIGN_IDENTITY="<identity hash or name>" ./build.sh --run
 Claude Pulse asks for two, and works in a reduced way without either.
 
 - **Notifications.** Without this you get no banners. The panel shows an orange warning when notifications are switched on in the widget but blocked by macOS.
-- **Accessibility** (System Settings → Privacy & Security → Accessibility). Needed for chats and Duet tasks, for opening a specific chat or Duet task, and for one of the signals that a session is waiting. Code sessions, pull requests, artifacts and usage work without it.
+- **Accessibility** (System Settings → Privacy & Security → Accessibility). Needed for chats and Duet tasks, for opening a specific chat or Duet task, and for one of the signals that a session is waiting. Code sessions, pull requests, artifacts and usage work without it. Screen watching, if you switch it on, uses the same permission; it needs no Screen Recording access because it takes no screenshots.
 
 Turning on Accessibility reading also switches on Claude Desktop's accessibility tree, which Electron apps leave off by default. That can make Claude slightly heavier until it is restarted.
 
@@ -90,11 +90,49 @@ python3 tools/usage_stats.py --days 14
 
 It reads `~/.claude/projects/*/*.jsonl` and prints exact counts per project, the tools and skills used, and a sample of prompts. Nothing leaves your machine.
 
+## Screen watching (optional, off by default)
+
+Skill suggestions normally come only from what you ask Claude Code. Repeated work done elsewhere, in a spreadsheet, a CRM or a browser, is invisible to that. Settings → Screen activity → **Watch my screen to suggest skills** fills the gap.
+
+While it is on, every 10 seconds Claude Pulse records:
+
+- the app in front and its window title;
+- the text visible in that window: labels, headings, links, button names and static text, up to about 2,000 characters.
+
+It deliberately leaves out:
+
+- **anything you type.** Text fields and text areas contribute their label only. That also means the body of a document you are editing is not recorded;
+- **any window with a password field**, which is recorded by title only;
+- **apps on the "Not watched" list** (password managers, System Settings and Messages to start with; add your own from the apps recently in front);
+- **private and incognito browser windows**, recognised by their title;
+- **the lock screen and screen saver**, and Claude Pulse itself.
+
+E-mail addresses, long numbers and things that look like keys or tokens are replaced with `[email]`, `[number]` and `[token]` before anything is written. This is pattern matching and will miss things: the log can still hold anything that was readable on screen. Use the "Not watched" list and the pause switch for anything sensitive.
+
+While watching, the menu-bar item shows an eye, and its right-click menu has **Pause screen watching**. A pause lasts until you resume or relaunch.
+
+Entries are written to `~/Library/Application Support/ClaudePulse/activity/YYYY-MM-DD.jsonl`, readable only by your user account. Files older than the "Keep for" setting (7 days by default) are deleted automatically, and **Delete collected activity** removes all of them at once.
+
+Claude Pulse itself still never calls a model. To turn the log into suggestions, add this to the daily scheduled task that already writes `insights.json`:
+
+```bash
+python3 tools/activity_stats.py --days 7
+```
+
+It prints the time spent per app, the window titles you keep returning to, the app-to-app sequences you repeat, and short text samples from the most repeated windows. Ask the session to look for repeated manual workflows in that output and add them to `skillIdeas` with `"source": "screen"`, so the panel can mark them as coming from screen activity. That step does send the summary to Claude, like the prompt sample from `usage_stats.py`.
+
+Some apps expose little to Accessibility. Chrome and most Electron apps often give only a window title unless an assistive tool is running. To see what a given app yields, without recording anything:
+
+```bash
+open -n ~/Applications/ClaudePulse.app --args --observe-probe /tmp/observe.txt 30
+```
+
 ## Privacy
 
 - Everything Claude Pulse reads stays on your Mac. It makes no network requests of its own; the only outside calls are the ones `gh` makes to GitHub.
 - It never stores a credential. For GitHub it asks `gh` for each account's token and hands it straight back to `gh` for that account's queries, in memory only.
 - It does read your session titles, transcripts (for token counts and the question Claude last asked), chat titles, Duet task titles and artifact titles, and shows them on screen. Chat and Duet titles are cached in the app's preferences so they survive a restart.
+- Screen watching is off unless you switch it on. When on, it keeps a local log of the front app, window titles and visible text, as described under [Screen watching](#screen-watching-optional-off-by-default). The app does not send that log anywhere; the scheduled Claude session you point at `tools/activity_stats.py` reads a summary of it.
 
 ## What can break
 
@@ -131,7 +169,10 @@ Sources/ClaudePulse/
   Git.swift            branch and working-tree status
   Settings.swift       preferences
   AXProbe.swift        diagnostics for mapping Claude's screens
+  AXHelpers.swift      shared Accessibility wrappers
+  ActivityObserver.swift  optional screen watching: front app, title and visible text
 tools/usage_stats.py   exact usage counts from local transcripts
+tools/activity_stats.py  summary of the screen-watching log
 tools/install-autostart.sh  start at login and with Claude Desktop
 tools/make_icon.swift  regenerate the app icon
 build.sh               build, bundle, sign, launch

@@ -62,6 +62,7 @@ struct PanelView: View {
     @ObservedObject var artifacts: ArtifactStore
     @ObservedObject var github: GitHubReader
     @ObservedObject var insights: InsightsStore
+    @ObservedObject var activity: ActivityObserver
     @ObservedObject private var settings = Settings.shared
     var open: (SessionRow) -> Void
 
@@ -102,11 +103,13 @@ struct PanelView: View {
             if layout.showSettings {
                 if manual {
                     // A long hidden-chats list must stay reachable at whatever height you chose.
-                    ScrollView(.vertical) { SettingsView(settings: settings, github: github, connections: connections) }
+                    ScrollView(.vertical) { SettingsView(settings: settings, github: github, activity: activity, connections: connections,
+                                              accessibilityAllowed: chats.trusted, requestAccessibility: chats.requestAccess) }
                         .scrollIndicators(.never)
                         .frame(maxHeight: .infinity)
                 } else {
-                    SettingsView(settings: settings, github: github, connections: connections)
+                    SettingsView(settings: settings, github: github, activity: activity, connections: connections,
+                                              accessibilityAllowed: chats.trusted, requestAccessibility: chats.requestAccess)
                 }
             } else if manual {
                 ScrollView(.vertical) { list(limit: nil) }
@@ -200,6 +203,17 @@ struct PanelView: View {
             let at = insights.insights?.updatedAt
             lines.append(ConnectionLine(name: "Usage and skill ideas", state: stale(at, 4 * 86_400) ? .problem : .ok,
                                         detail: at == nil ? "no snapshot yet" : "snapshot \(Format.ago(at!)) old"))
+        }
+        if settings.observeScreen {
+            if !chats.trusted {
+                lines.append(ConnectionLine(name: "Screen activity", state: .problem, detail: "Accessibility access is off"))
+            } else if settings.observePaused {
+                lines.append(ConnectionLine(name: "Screen activity", state: .down, detail: "paused"))
+            } else {
+                let entries = activity.entriesToday
+                lines.append(ConnectionLine(name: "Screen activity", state: .ok,
+                                            detail: "watching; \(entries) \(entries == 1 ? "entry" : "entries") today"))
+            }
         }
         if settings.notifyOnFinish {
             let blocked = ["denied", "notDetermined", "bannersOff"].contains(settings.notificationAccess)
@@ -1504,6 +1518,13 @@ private struct SkillIdeaRowView: View {
                             .contentShape(Rectangle())
                             .onTapGesture(perform: dismiss)
                             .help("Not interested")
+                    } else if idea.source == "screen" {
+                        Text(idea.seen.map { "on screen ~\($0)×" } ?? "from screen activity")
+                            .font(.system(size: 10 * scale))
+                            .foregroundStyle(Palette.text3)
+                            .monospacedDigit()
+                            .fixedSize()
+                            .help("Suggested from what you were doing on screen, not from your prompts")
                     } else if let seen = idea.seen {
                         Text("asked ~\(seen)×")
                             .font(.system(size: 10 * scale))
@@ -1751,7 +1772,67 @@ private struct SettingsView: View {
     @Environment(\.uiScale) private var scale
     @ObservedObject var settings: Settings
     @ObservedObject var github: GitHubReader
+    @ObservedObject var activity: ActivityObserver
     var connections: [ConnectionLine] = []
+    var accessibilityAllowed = true
+    var requestAccessibility: () -> Void = {}
+
+    private func note(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 10.5 * scale))
+            .foregroundStyle(Palette.text3)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder private var screenActivity: some View {
+        section("Screen activity") {
+            toggle("Watch my screen to suggest skills", $settings.observeScreen)
+            note("Off by default. When on, Claude Pulse records the app in front, its window title and the text visible in that window, every 10 seconds. No screenshots. Text you type and windows with a password field are left out.")
+            if settings.observeScreen {
+                Group {
+                    note("Stored only on this Mac, in ~/Library/Application Support/ClaudePulse/activity. It can still hold anything that was on screen, and the Claude session that suggests skills reads a summary of it.")
+                    if !accessibilityAllowed {
+                        link("Allow Accessibility access to start watching", action: requestAccessibility)
+                    }
+                    toggle("Paused", $settings.observePaused)
+                    choice("Keep for", $settings.observeRetentionDays, [(1, "1d"), (7, "7d"), (14, "14d")])
+                    Text("NOT WATCHED")
+                        .font(.system(size: 9 * scale, weight: .semibold))
+                        .kerning(0.6)
+                        .foregroundStyle(Palette.text3)
+                        .padding(.top, 2)
+                    ForEach(settings.observeExcludedApps, id: \.self) { bundle in
+                        HStack {
+                            Text(ActivityObserver.appName(bundle))
+                                .font(.system(size: 12 * scale))
+                                .foregroundStyle(Palette.text2)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 8)
+                            link("Watch") { settings.observeExcludedApps.removeAll { $0 == bundle } }
+                        }
+                    }
+                    let candidates = activity.recentApps.filter { !settings.observeExcludedApps.contains($0.bundle) }
+                    if !candidates.isEmpty {
+                        Menu {
+                            ForEach(candidates) { app in
+                                Button(app.name) { settings.observeExcludedApps.append(app.bundle) }
+                            }
+                        } label: {
+                            Text("Stop watching an app…")
+                                .font(.system(size: 11 * scale, weight: .medium))
+                                .foregroundStyle(Palette.attention)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                    }
+                    link("Delete collected activity") { activity.deleteAll() }
+                }
+                .padding(.leading, 12)
+            }
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1780,6 +1861,7 @@ private struct SettingsView: View {
                 toggle("Skills worth creating", $settings.showSkillIdeas)
                 toggle("Your usage and limits", $settings.showUsage)
             }
+            screenActivity
             section("Appearance") {
                 toggle("Larger text as the panel gets wider", $settings.scaleText)
             }

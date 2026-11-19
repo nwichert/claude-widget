@@ -24,6 +24,33 @@ final class Settings: ObservableObject {
         static let showUsage = "showUsage"
         static let showDuet = "showDuet"
         static let dismissedIdeas = "dismissedIdeas"
+        static let observeScreen = "observeScreen"
+        static let observePaused = "observePaused"
+        static let observeExcludedApps = "observeExcludedApps"
+        static let observeRetentionDays = "observeRetentionDays"
+    }
+
+    /// Apps never recorded by the screen observer unless you remove them from the list: password
+    /// managers, system settings and messages.
+    static let defaultExcludedApps = [
+        "com.1password.1password", "com.agilebits.onepassword7", "com.bitwarden.desktop",
+        "com.apple.keychainaccess", "com.apple.Passwords", "com.apple.systempreferences",
+        "com.apple.MobileSMS",
+    ]
+
+    /// Off unless you switch it on: record the front app, window title and visible text so a
+    /// Claude session can suggest skills from work done outside Claude.
+    @Published var observeScreen: Bool { didSet { defaults.set(observeScreen, forKey: Key.observeScreen) } }
+    /// A temporary stop from the menu. Stored so the observer's queue can read it, but every
+    /// launch starts unpaused.
+    @Published var observePaused = false { didSet { defaults.set(observePaused, forKey: Key.observePaused) } }
+    /// Bundle ids the observer skips entirely.
+    @Published var observeExcludedApps: [String] {
+        didSet { defaults.set(observeExcludedApps, forKey: Key.observeExcludedApps) }
+    }
+    /// Days of screen activity kept on disk.
+    @Published var observeRetentionDays: Int {
+        didSet { defaults.set(observeRetentionDays, forKey: Key.observeRetentionDays) }
     }
 
     @Published var notifySessions: Bool { didSet { defaults.set(notifySessions, forKey: Key.notifySessions) } }
@@ -109,6 +136,15 @@ final class Settings: ObservableObject {
         collapsedSections = UserDefaults.standard.stringArray(forKey: "collapsedSections") ?? ["skills", "usage"]
         dismissedIdeas = UserDefaults.standard.stringArray(forKey: Key.dismissedIdeas) ?? []
         hiddenChats = UserDefaults.standard.stringArray(forKey: Key.hiddenChats) ?? []
+        observeScreen = Self.bool(Key.observeScreen, default: false)
+        observeExcludedApps = Self.excludedApps()
+        observeRetentionDays = Self.int(Key.observeRetentionDays, default: 7)
+        UserDefaults.standard.set(false, forKey: Key.observePaused)
+    }
+
+    /// The exclusion list as stored, for the observer's queue.
+    static func excludedApps() -> [String] {
+        UserDefaults.standard.stringArray(forKey: Key.observeExcludedApps) ?? defaultExcludedApps
     }
 
     func hideChat(_ title: String) {

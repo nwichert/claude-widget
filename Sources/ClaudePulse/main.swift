@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let artifacts = ArtifactStore()
     private let github = GitHubReader()
     private let insights = InsightsStore()
+    private let activity = ActivityObserver()
     private var panel: PanelController!
     private var statusItem: NSStatusItem!
     private var cancellables = Set<AnyCancellable>()
@@ -111,6 +112,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
             return
         }
+        // Diagnostic: `--observe-probe out.txt [seconds]` logs what the screen observer would record
+        // from whatever is in front, without recording it.
+        if let i = CommandLine.arguments.firstIndex(of: "--observe-probe"), CommandLine.arguments.count > i + 1 {
+            let path = CommandLine.arguments[i + 1]
+            let seconds = CommandLine.arguments.indices.contains(i + 2) ? Int(CommandLine.arguments[i + 2]) ?? 30 : 30
+            DispatchQueue.global().async {
+                ActivityObserver.probe(to: path, seconds: seconds)
+                DispatchQueue.main.async { NSApp.terminate(nil) }
+            }
+            return
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--ax-probe"), CommandLine.arguments.count > i + 1 {
             let path = CommandLine.arguments[i + 1]
             DispatchQueue.global().async {
@@ -124,7 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return
         }
 
-        panel = PanelController(store: store, chats: chats, artifacts: artifacts, github: github, insights: insights) { [weak self] row in self?.open(row) }
+        panel = PanelController(store: store, chats: chats, artifacts: artifacts, github: github, insights: insights, activity: activity) { [weak self] row in self?.open(row) }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
@@ -138,6 +150,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         store.$rows
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.renderStatus(rows: $0) }
+            .store(in: &cancellables)
+
+        // The menu bar shows an eye for as long as the screen is being watched.
+        Settings.shared.$observeScreen.combineLatest(Settings.shared.$observePaused)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.renderStatus(rows: self.store.rows)
+            }
             .store(in: &cancellables)
 
         store.onFinished = { [weak self] row in self?.notify(row) }
@@ -164,6 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         artifacts.start()
         github.start()
         insights.start()
+        activity.start()
 
         // `ClaudePulse --snapshot out.png` renders the panel to a file and quits (for checking layout).
         if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), CommandLine.arguments.count > i + 1 {
@@ -194,8 +216,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .withSymbolConfiguration(.init(pointSize: 11, weight: .semibold))
         image?.isTemplate = true
         button.image = image
-        button.title = waiting > 0 ? " \(waiting)" : ""
+        let watching = Settings.shared.observeScreen && !Settings.shared.observePaused && AXIsProcessTrusted()
+        let title = NSMutableAttributedString(string: waiting > 0 ? " \(waiting)" : "",
+                                              attributes: [.font: NSFont.menuBarFont(ofSize: 0)])
+        if watching, let eye = NSImage(systemSymbolName: "eye.fill", accessibilityDescription: "Watching screen activity")?
+            .withSymbolConfiguration(.init(pointSize: 9, weight: .semibold)) {
+            eye.isTemplate = true
+            let attachment = NSTextAttachment()
+            attachment.image = eye
+            title.append(NSAttributedString(string: " "))
+            title.append(NSAttributedString(attachment: attachment))
+        }
+        button.attributedTitle = title
         button.toolTip = "\(waiting) done and waiting on you · \(working) working"
+            + (watching ? " · watching screen activity" : "")
     }
 
     @objc private func statusClicked() {
@@ -235,6 +269,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
         loginItem.isEnabled = canNotify
 
+        if Settings.shared.observeScreen {
+            menu.addItem(.separator())
+            menu.addItem(withTitle: Settings.shared.observePaused ? "Resume screen watching" : "Pause screen watching",
+                         action: #selector(toggleObservePaused), keyEquivalent: "").target = self
+        }
+
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Claude Pulse", action: #selector(quitByUser), keyEquivalent: "q").target = self
 
@@ -262,6 +302,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     @objc private func openWaiting() {
         if let url = URL(string: "claude://code/needs-input") { NSWorkspace.shared.open(url) }
+    }
+
+    @objc private func toggleObservePaused() { Settings.shared.observePaused.toggle() }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // The observer holds its current entry in memory until the window changes.
+        activity.stop()
     }
 
     @objc private func toggleNotify() { notifyEnabled.toggle() }
