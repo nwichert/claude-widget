@@ -124,6 +124,8 @@ final class ChatReader: ObservableObject {
     var onDuetNeedsInput: ((DuetTask) -> Void)?
     /// Chats with an answer you have not been back to read, by title, with when it was noticed.
     @Published private(set) var waitingChats: [String: Date] = [:]
+    /// Chats you left while Claude was still answering, by title; not yet presumed answered.
+    @Published private(set) var answeringChats: [String] = []
     /// Called on the main thread with the chat's title; `leftEarly` when you walked away before
     /// Claude finished, so the answer is presumed rather than seen.
     var onChatAnswered: ((_ title: String, _ leftEarly: Bool) -> Void)?
@@ -138,7 +140,10 @@ final class ChatReader: ObservableObject {
     /// For `--snapshot --demo-chat-answer`: pretend a chat has an answer waiting.
     func demoWaitingChat(_ title: String) {
         waitingChats[title] = Date()
-        queue.async { self.chatsWaiting["demo"] = (title, Date(), true) }
+        queue.async {
+            self.chatsWaiting["demo"] = (title, Date(), true)
+            self.chatsLeft["demo2"] = ("Vendor shortlist comparison", Date())
+        }
     }
     /// Titles already known to need input, so each task alerts once. Touched only on the reader queue.
     private var duetAlerted: Set<String>?
@@ -331,9 +336,11 @@ final class ChatReader: ObservableObject {
             return CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyInput) < 120
         }()
         var answered: [(String, Bool)] = []
+        func note(_ text: String) { trace?(text); Self.log(text, to: "chat-answers.log") }
 
         if let chat {
             if chat.answering {
+                if chatsAnswering[chat.id] == nil { note("answering: \(chat.title)") }
                 chatsAnswering[chat.id] = chat.title
                 chatsLeft[chat.id] = nil
                 chatsWaiting[chat.id] = nil
@@ -343,9 +350,12 @@ final class ChatReader: ObservableObject {
                     if !here {
                         chatsWaiting[chat.id] = (chat.title, now, false)
                         answered.append((chat.title, false))
+                        note("finished while you were away, marked waiting: \(chat.title)")
+                    } else {
+                        note("finished while you were watching, nothing to flag: \(chat.title)")
                     }
-                } else if here {
-                    chatsWaiting[chat.id] = nil
+                } else if here, chatsWaiting.removeValue(forKey: chat.id) != nil {
+                    note("you opened it, cleared: \(chat.title)")
                 }
             }
         }
@@ -353,11 +363,13 @@ final class ChatReader: ObservableObject {
         for (id, title) in chatsAnswering where id != chat?.id {
             chatsAnswering[id] = nil
             chatsLeft[id] = (title, now)
+            note("left mid-answer: \(title)")
         }
         for (id, left) in chatsLeft where now.timeIntervalSince(left.at) >= 120 {
             chatsLeft[id] = nil
             chatsWaiting[id] = (left.title, now, false)
             answered.append((left.title, true))
+            note("two minutes on, presumed answered and marked waiting: \(left.title)")
         }
         // One nudge later, on the same timer as sessions, if you still have not been back.
         let remind = TimeInterval(Settings.int(Settings.Key.remindMinutes, default: 15) * 60)
@@ -370,7 +382,9 @@ final class ChatReader: ObservableObject {
         }
 
         let waiting = Dictionary(chatsWaiting.values.map { ($0.title, $0.at) }, uniquingKeysWith: { first, _ in first })
+        let leftAnswering = chatsLeft.values.sorted { $0.at > $1.at }.map(\.title)
         DispatchQueue.main.async {
+            if self.answeringChats != leftAnswering { self.answeringChats = leftAnswering }
             if self.waitingChats != waiting { self.waitingChats = waiting }
             answered.forEach { self.onChatAnswered?($0.0, $0.1) }
             reminders.forEach { self.onChatReminder?($0) }
@@ -842,9 +856,11 @@ final class ChatReader: ObservableObject {
 
     /// A short record of when the look-in ran or why it held off, with statuses but no task names:
     /// ~/Library/Application Support/ClaudePulse/duet-lookin.log, kept to its last 200 lines.
-    private static func logPeek(_ text: String) {
+    private static func logPeek(_ text: String) { log(text, to: "duet-lookin.log") }
+
+    private static func log(_ text: String, to name: String) {
         let file = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/ClaudePulse/duet-lookin.log")
+            .appendingPathComponent("Library/Application Support/ClaudePulse/" + name)
         let stamp = ISO8601DateFormatter().string(from: Date())
         var lines = ((try? String(contentsOf: file, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
         lines.append("\(stamp) \(text)")

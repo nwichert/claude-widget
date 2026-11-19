@@ -241,6 +241,11 @@ struct PanelView: View {
                                     action: { chats.openDuet(task) }))
             }
         }
+        for chat in answeredChats {
+            out.append(Headline(id: "chat-" + chat.id, icon: "bubble.left.fill", color: Palette.attention,
+                                label: "Answered", text: chat.title,
+                                action: { chats.open(chat) }))
+        }
         for row in store.rows where row.state == .needsYou {
             out.append(Headline(id: "done-" + row.id, icon: "checkmark.circle.fill", color: Palette.done,
                                 label: "Done", text: row.title,
@@ -333,12 +338,22 @@ struct PanelView: View {
         settings.ignoredPullRequests[pr.url] = "\(pr.repo) #\(pr.number) · \(pr.title)"
     }
 
+    /// Chats holding an answer you have not been back to read, newest first. They sit under
+    /// Needs You, whether or not the cached chat list has caught up with them.
+    private var answeredChats: [ChatItem] {
+        guard settings.showChats else { return [] }
+        return chats.waitingChats.sorted { $0.value > $1.value }.map { waiting in
+            chats.chats.first { $0.title == waiting.key } ?? ChatItem(title: waiting.key, badge: nil)
+        }
+    }
+
     @ViewBuilder private var needsYouSection: some View {
         let sessions = urgentSessions
         let tasks = urgentDuetTasks
         let shared = urgentArtifacts
         let prs = urgentPullRequests
-        let count = sessions.count + tasks.count + shared.count + prs.count
+        let answered = answeredChats
+        let count = sessions.count + tasks.count + answered.count + shared.count + prs.count
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
                 Text("NEEDS YOU")
@@ -366,6 +381,11 @@ struct PanelView: View {
                 DuetTaskRowView(task: task, showSpace: true,
                                 open: { chats.openDuet(task) },
                                 complete: { chats.completeDuet(task) })
+            }
+            ForEach(answered) { chat in
+                ChatRowView(chat: chat, answered: true,
+                            open: { chats.open(chat) },
+                            hide: { chats.dismissWaitingChat(chat.title) })
             }
             ForEach(shared) { item in
                 ArtifactRowView(item: item,
@@ -640,15 +660,20 @@ struct PanelView: View {
     @ViewBuilder private var chatSection: some View {
         let hidden = Set(settings.hiddenChats)
         // Hidden chats are dropped before the limit is applied, so hiding one pulls the next one up.
-        // Chats with an answer you have not read go first, whether or not the list has caught up
-        // with them (it is only refreshed while the Claude tab is open) and even if hidden.
-        let answered = chats.waitingChats.sorted { $0.value > $1.value }.map { waiting in
-            chats.chats.first { $0.title == waiting.key } ?? ChatItem(title: waiting.key, badge: nil)
+        // Chats with an answer waiting are listed under Needs You instead.
+        let answered = answeredChats
+        // Chats you left mid-answer come next, so you can see they are being followed.
+        let answering = chats.answeringChats.filter { chats.waitingChats[$0] == nil }.map { title in
+            chats.chats.first { $0.title == title } ?? ChatItem(title: title, badge: nil)
         }
-        let available = chats.chats.filter { !hidden.contains($0.title) && chats.waitingChats[$0.title] == nil }
+        let pinned = Set(answering.map(\.title))
+        let elsewhere = Set(answered.map(\.title))
+        let available = chats.chats.filter {
+            !hidden.contains($0.title) && !pinned.contains($0.title) && !elsewhere.contains($0.title)
+        }
         let visible = Array(available.prefix(layout.chatLimit))
         VStack(alignment: .leading, spacing: 1) {
-            sectionHeader("CHATS", id: "chats", count: available.count + answered.count) {
+            sectionHeader("CHATS", id: "chats", count: available.count + pinned.count) {
                 if !hidden.isEmpty {
                     Text("· \(hidden.count) hidden")
                         .font(.system(size: 10 * scale))
@@ -669,14 +694,14 @@ struct PanelView: View {
             }
 
             if !settings.isCollapsed("chats") {
-            ForEach(answered) { chat in
-                ChatRowView(chat: chat, answered: true,
+            ForEach(answering) { chat in
+                ChatRowView(chat: chat, answering: true,
                             open: { chats.open(chat) },
-                            hide: { chats.dismissWaitingChat(chat.title) })
+                            hide: { settings.hideChat(chat.title) })
             }
             if !chats.trusted {
                 hint("Allow Accessibility access to list chats", action: chats.requestAccess)
-            } else if !answered.isEmpty, visible.isEmpty {
+            } else if !pinned.isEmpty, visible.isEmpty {
                 EmptyView()
             } else if chats.chats.isEmpty {
                 hint("Open the Claude tab once to load your chats", action: nil)
@@ -1974,6 +1999,8 @@ private struct ChatRowView: View {
     @Environment(\.uiScale) private var scale
     let chat: ChatItem
     var answered = false
+    /// You left it while Claude was still answering.
+    var answering = false
     let open: () -> Void
     let hide: () -> Void
     @State private var hovering = false
@@ -2004,6 +2031,13 @@ private struct ChatRowView: View {
                     .contentShape(Rectangle())
                     .onTapGesture(perform: hide)
                     .help(answered ? "Clear without opening" : "Hide this chat from the panel")
+            } else if answering {
+                ArcSpinner()
+                    .frame(width: 9 * scale, height: 9 * scale)
+                Text("answering")
+                    .font(.system(size: 10 * scale, weight: .medium))
+                    .foregroundStyle(Palette.working)
+                    .fixedSize()
             } else if answered {
                 Text("answer waiting")
                     .font(.system(size: 10 * scale, weight: .medium))
