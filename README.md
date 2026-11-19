@@ -44,7 +44,15 @@ It lists your Claude Code sessions, Duet tasks, artifacts, recent chats and open
 ./build.sh --run
 ```
 
-This builds a release binary, wraps it as `build/ClaudePulse.app` (a menu-bar app with no Dock icon), signs it, and launches it. Run the same command again after changing the code.
+This builds a release binary, wraps it as a menu-bar app with no Dock icon, signs it, installs it to `~/Applications/ClaudePulse.app`, and launches it from there. Run the same command again after changing the code.
+
+### Start automatically
+
+```bash
+tools/install-autostart.sh
+```
+
+This installs a per-user launchd agent that opens Claude Pulse at login and whenever Claude Desktop is opened. Quitting Claude Pulse from its menu keeps it closed until Claude Desktop is next opened. Remove it with `tools/install-autostart.sh --uninstall`. It needs no administrator rights and installs nothing outside your home folder.
 
 ### Signing matters
 
@@ -124,6 +132,8 @@ Sources/ClaudePulse/
   Settings.swift       preferences
   AXProbe.swift        diagnostics for mapping Claude's screens
 tools/usage_stats.py   exact usage counts from local transcripts
+tools/install-autostart.sh  start at login and with Claude Desktop
+tools/make_icon.swift  regenerate the app icon
 build.sh               build, bundle, sign, launch
 ```
 
@@ -133,8 +143,8 @@ The app has a few command-line modes for checking what it sees. Modes that read 
 
 ```bash
 # Render the panel to a PNG without showing it
-build/ClaudePulse.app/Contents/MacOS/ClaudePulse --snapshot out.png
+~/Applications/ClaudePulse.app/Contents/MacOS/ClaudePulse --snapshot out.png
 
 # Record every page Claude's window shows for 60 seconds
-open -n build/ClaudePulse.app --args --ax-follow /tmp/pages.txt 60
+open -n ~/Applications/ClaudePulse.app --args --ax-follow /tmp/pages.txt 60
 ```

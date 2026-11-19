@@ -1,5 +1,8 @@
 #!/bin/bash
-# Builds build/ClaudePulse.app (menu-bar app, no Dock icon). Pass --run to relaunch it afterwards.
+# Builds build/ClaudePulse.app (menu-bar app, no Dock icon).
+#   --run      also install it to ~/Applications and (re)launch it from there
+# The installed copy is the one that runs day to day: the auto-start launcher points at it, and a
+# fixed location keeps it out of the way of rebuilds. See tools/install-autostart.sh.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -45,7 +48,12 @@ fi
 echo "Built $APP"
 
 if [[ "${1:-}" == "--run" ]]; then
+    INSTALLED="$HOME/Applications/ClaudePulse.app"
+    mkdir -p "$HOME/Applications"
     pkill -x ClaudePulse 2>/dev/null || true
     sleep 0.5
-    open "$APP"
+    rm -rf "$INSTALLED"
+    ditto "$APP" "$INSTALLED"
+    echo "Installed $INSTALLED"
+    open "$INSTALLED"
 fi

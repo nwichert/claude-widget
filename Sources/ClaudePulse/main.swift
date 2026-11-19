@@ -236,7 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         loginItem.isEnabled = canNotify
 
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit Claude Pulse", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.addItem(withTitle: "Quit Claude Pulse", action: #selector(quitByUser), keyEquivalent: "q").target = self
 
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
@@ -246,6 +246,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func togglePanel() {
         panel.toggle()
         UserDefaults.standard.set(!panel.isVisible, forKey: panelHiddenKey)
+    }
+
+    /// Quitting from the menu is a decision to stay quit. The auto-start launcher sees this marker
+    /// and leaves Claude Pulse closed until Claude Desktop is next opened.
+    @objc private func quitByUser() {
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/ClaudePulse")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: dir.appendingPathComponent("quit-by-user").path, contents: nil)
+        NSApp.terminate(nil)
     }
 
     @objc private func resetPanelSize() { panel.resetSize() }
