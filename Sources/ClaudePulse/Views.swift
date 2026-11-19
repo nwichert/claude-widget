@@ -946,13 +946,22 @@ struct PanelView: View {
     }
 
     /// Which model fits the work a per-model weekly limit has been spent on, and roughly what the
-    /// limit would read if each kind of work had gone to the model that suits it. Only for a
-    /// limit that names a model, and only with enough turns to go on.
+    /// limit would read if each kind of work had gone to the model that suits it. Claude's ring
+    /// moves between limits, so when it shows another one this goes by the last reading of the
+    /// model's own limit, or, before there is one, by the model most used this week.
     private func modelSwitchHint(_ usage: LiveUsage) -> (text: String, help: String)? {
         let ladder = ["haiku", "sonnet", "opus", "fable"]
-        guard usage.shortLabel == "7d",
-              let family = ["fable", "mythos", "opus", "sonnet"].first(where: usage.limit.lowercased().contains),
-              let share = modelFit.shares[family], share.turns >= 10 else { return nil }
+        // The model's own limit: on the ring now, or as last seen if it has not reset since.
+        var reading: LiveUsage? = usage.modelFamily != nil ? usage : chats.modelUsage
+        if let seen = reading, seen != usage {
+            let reset = ModelFit.lastReset(seen.resets, now: Date())
+            let stale = reset.map { $0 > seen.seenAt } ?? (Date().timeIntervalSince(seen.seenAt) > 7 * 86_400)
+            if stale { reading = nil }
+        }
+        let busiest = ["fable", "opus", "sonnet"].max { (modelFit.shares[$0]?.turns ?? 0) < (modelFit.shares[$1]?.turns ?? 0) }
+        guard let family = reading?.modelFamily ?? busiest,
+              let share = modelFit.shares[family == "mythos" ? "fable" : family] ?? modelFit.shares[family],
+              share.turns >= 10 else { return nil }
         let rung = ladder.firstIndex(of: family == "mythos" ? "fable" : family) ?? 3
         guard rung > 0 else { return nil }
         let name = family.capitalized
@@ -961,16 +970,24 @@ struct PanelView: View {
         func pct(_ value: Double) -> Int { Int((value * 100).rounded()) }
         let heavy = pct(share.heavy), quick = pct(share.quick), everyday = max(0, 100 - heavy - quick)
         // Only heavy work stays on this model; the rest would count against other limits.
-        let would = Int((Double(usage.percent) * share.heavy).rounded())
+        let outcome: String
+        if let reading {
+            let would = Int((Double(reading.percent) * share.heavy).rounded())
+            let now = reading == usage ? "" : " (\(name) limit \(reading.percent)% when last shown)"
+            outcome = " would leave the \(name) limit near \(would)%\(now)."
+        } else {
+            outcome = " would save about \(100 - heavy)% of your \(name) use."
+        }
 
         let split = "\(heavy)% heavy, \(everyday)% everyday, \(quick)% quick"
         let text: String
         if share.heavy >= 0.5 {
-            guard heavy <= 97 else { return nil }
-            text = "Best fit: \(name) for most of this work (\(split)). \(middle) for the rest would leave you near \(would)%."
+            text = heavy >= 98
+                ? "Best fit: \(name), nearly all of this week's \(name) work is heavy (\(split))."
+                : "Best fit: \(name) for most of this work (\(split)). \(middle) for the rest" + outcome
         } else {
             let best = middle == light || share.everyday >= share.quick ? middle : light
-            text = "Best fit: \(best) for most of this work (\(split)). \(name) for the heavy part only would leave you near \(would)%."
+            text = "Best fit: \(best) for most of this work (\(split)). \(name) for the heavy part only" + outcome
         }
         return (text,
                 """

@@ -32,6 +32,12 @@ struct LiveUsage: Equatable, Codable {
         return limit
     }
 
+    /// The model a weekly limit is for ("fable", "opus", ...), or nil for "all models" and the 5-hour limit.
+    var modelFamily: String? {
+        guard shortLabel == "7d" else { return nil }
+        return ["fable", "mythos", "opus", "sonnet"].first(where: limit.lowercased().contains)
+    }
+
     /// Parses the ring's accessibility label. Two shapes have been seen:
     ///   "Usage: 77% of 5-hour limit, Resets at 4:40 PM"
     ///   "Usage: Weekly · all models: 43%, Resets Sat 6:00 PM"
@@ -124,6 +130,10 @@ final class ChatReader: ObservableObject {
     /// Claude's own live usage figure, read off the usage ring whenever a page that shows it is open.
     @Published private(set) var liveUsage: LiveUsage?
     private let usageKey = "liveUsage"
+    /// The last reading of a weekly limit that names a model ("Weekly · Fable"). Claude's ring
+    /// switches between limits, so this is kept for when it shows another one.
+    @Published private(set) var modelUsage: LiveUsage?
+    private let modelUsageKey = "modelUsage"
     private var tickCount = 0
 
     /// Called on the main queue when a Duet task is seen needing input for the first time.
@@ -188,6 +198,9 @@ final class ChatReader: ObservableObject {
         }
         if let data = UserDefaults.standard.data(forKey: usageKey) {
             liveUsage = try? JSONDecoder().decode(LiveUsage.self, from: data)
+        }
+        if let data = UserDefaults.standard.data(forKey: modelUsageKey) {
+            modelUsage = try? JSONDecoder().decode(LiveUsage.self, from: data)
         }
         if let data = UserDefaults.standard.data(forKey: duetKey),
            let cached = try? JSONDecoder().decode([DuetTask].self, from: data) {
@@ -427,7 +440,13 @@ final class ChatReader: ObservableObject {
                 self.attr(e, kAXRoleAttribute) as? String == "AXPopUpButton" && self.label(e).hasPrefix("Usage")
             }), let usage = LiveUsage.parse(label(ring), at: Date()) else { continue }
             if let data = try? JSONEncoder().encode(usage) { UserDefaults.standard.set(data, forKey: usageKey) }
-            DispatchQueue.main.async { self.liveUsage = usage }
+            if usage.modelFamily != nil, let data = try? JSONEncoder().encode(usage) {
+                UserDefaults.standard.set(data, forKey: modelUsageKey)
+            }
+            DispatchQueue.main.async {
+                self.liveUsage = usage
+                if usage.modelFamily != nil { self.modelUsage = usage }
+            }
             return
         }
     }
