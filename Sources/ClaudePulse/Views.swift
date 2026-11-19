@@ -313,7 +313,7 @@ struct PanelView: View {
             if settings.showSkillIdeas { skillsSection(data) }
             if settings.showUsage { usageSection(data) }
         }
-        if settings.showUsage, !storage.items.isEmpty { storageSection }
+        if settings.showUsage { storageSection }
         Color.clear.frame(height: 8)  // so the last row never sits against the footer when scrolled
     }
 
@@ -570,7 +570,7 @@ struct PanelView: View {
     @ViewBuilder private var storageSection: some View {
         let cleanable = storage.items.filter { $0.action != nil }.reduce(Int64(0)) { $0 + $1.bytes }
         VStack(alignment: .leading, spacing: 1) {
-            sectionHeader("STORAGE · \(StorageStore.format(storage.total))", id: "storage") {
+            sectionHeader(storage.updatedAt == nil ? "STORAGE" : "STORAGE · \(StorageStore.format(storage.total))", id: "storage") {
                 if cleanable > 0 {
                     Text("· \(StorageStore.format(cleanable)) can go")
                         .font(.system(size: 10 * scale))
@@ -591,6 +591,13 @@ struct PanelView: View {
                 }
             }
             if !settings.isCollapsed("storage") {
+                if storage.updatedAt == nil {
+                    Text("Measuring what Claude keeps on this Mac…")
+                        .font(.system(size: 11 * scale))
+                        .foregroundStyle(Palette.text3)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4 * scale)
+                }
                 let biggest = max(1, storage.items.map(\.bytes).max() ?? 1)
                 ForEach(storage.items) { item in
                     StorageRowView(item: item, fraction: Double(item.bytes) / Double(biggest)) { confirmClean(item) }

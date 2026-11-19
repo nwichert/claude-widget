@@ -49,7 +49,7 @@ final class StorageStore: ObservableObject {
 
     func start() {
         let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + 20, repeating: .seconds(1_800), leeway: .seconds(60))
+        t.schedule(deadline: .now() + 2, repeating: .seconds(1_800), leeway: .seconds(30))
         t.setEventHandler { [weak self] in self?.scan() }
         t.resume()
         timer = t
