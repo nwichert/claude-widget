@@ -63,6 +63,8 @@ struct DuetTask: Identifiable, Equatable, Codable {
 
     var needsInput: Bool { status.lowercased().contains("input") }
     var readyForReview: Bool { status.lowercased().contains("review") }
+    /// Claude is on it right now; Duet shows a spinner beside these.
+    var isWorking: Bool { status.lowercased().contains("working") }
 }
 
 /// A channel or group from Claude Duet's sidebar.
@@ -71,6 +73,8 @@ struct DuetSpace: Identifiable, Equatable, Codable {
     /// "channel" or "group", from how Duet labels the row.
     var kind: String
     var url: String?
+    /// Duet marks it as having something you have not read.
+    var unread: Bool?
     var id: String { url ?? "\(kind):\(name)" }
 
     var isGroup: Bool { kind == "group" }
@@ -281,10 +285,19 @@ final class ChatReader: ObservableObject {
         var paneSpace: String?
         var tasks: [DuetTask] = []
         var visited = 0
-        func walk(_ e: AXUIElement, _ depth: Int) {
+        func walk(_ e: AXUIElement, _ depth: Int, _ region: String?) {
             visited += 1
             guard visited < 1_200, depth < 40 else { return }
             let role = attr(e, kAXRoleAttribute) as? String ?? ""
+            var region = region
+            // "Everything" files each channel's tasks in a region of its own:
+            // "Tasks in the performance-review channel".
+            if depth > 0, attr(e, kAXSubroleAttribute) as? String == "AXLandmarkRegion" {
+                let text = label(e)
+                for suffix in [" channel", " group"] where text.hasPrefix("Tasks in the ") && text.hasSuffix(suffix) {
+                    region = String(text.dropFirst("Tasks in the ".count).dropLast(suffix.count))
+                }
+            }
             switch role {
             case "AXRadioButton":
                 // Tabs: Active, Up next, Scheduled, Resolved. Only the Active list is kept.
@@ -304,29 +317,41 @@ final class ChatReader: ObservableObject {
                     group = text.replacingOccurrences(of: #"\s+\d+\s+tasks?$"#, with: "", options: .regularExpression)
                 }
             case "AXLink":
-                guard let title = staticTexts(in: e, depth: 0).first, !group.isEmpty else { break }
-                // The link's own label reads "Title, Status, summary".
+                guard let title = staticTexts(in: e, depth: 0).first else { break }
+                // The link's own label reads "Title, Status, summary". The status is taken from
+                // there, because the heading above is a status in one view and a channel in another.
                 var summary: String?
+                var status = group
                 let full = label(e)
-                let prefix = "\(title), \(group), "
-                if full.hasPrefix(prefix) { summary = String(full.dropFirst(prefix.count)) }
+                if full.hasPrefix(title + ", ") {
+                    let rest = full.dropFirst(title.count + 2)
+                    if let comma = rest.range(of: ", ") {
+                        if rest[..<comma.lowerBound].count <= 40 {
+                            status = String(rest[..<comma.lowerBound])
+                            summary = String(rest[comma.upperBound...])
+                        }
+                    } else if rest.count <= 40 {
+                        status = String(rest)
+                    }
+                }
+                guard !status.isEmpty else { break }
                 let url = (attr(e, kAXURLAttribute) as? URL)?.absoluteString
                 // In "Everything" a task may still say where it lives, in its address or its label.
-                let home = spaces.first { space in
+                let home = region ?? spaces.first { space in
                     if let key = space.key, let url, url.contains(key) { return true }
                     return full.contains("#\(space.name)")
-                }
+                }?.name
                 if !tasks.contains(where: { $0.title == title }) {
-                    tasks.append(DuetTask(title: title, status: group, summary: summary?.isEmpty == false ? summary : nil,
-                                          url: url, space: home?.name))
+                    tasks.append(DuetTask(title: title, status: status, summary: summary?.isEmpty == false ? summary : nil,
+                                          url: url, space: home))
                 }
                 return  // nothing useful below a task link
             default:
                 break
             }
-            for child in children(e) { walk(child, depth + 1) }
+            for child in children(e) { walk(child, depth + 1, region) }
         }
-        walk(pane, 0)
+        walk(pane, 0, nil)
 
         var current: String?
         if let pageKey {
@@ -504,11 +529,14 @@ final class ChatReader: ObservableObject {
                       url.lastPathComponent != "messages", url.path.hasPrefix("/messages/"),
                       let name = staticTexts(in: e, depth: 0).first ?? Optional(label(e)), !name.isEmpty
                 else { return }
+                // "return-migration channel", or "return-migration channel, unread".
                 let full = label(e).lowercased()
-                let kind = full.hasSuffix(" group") || (!full.hasSuffix(" channel") && list.contains("group"))
+                let lowered = name.lowercased()
+                let kind = full.hasPrefix(lowered + " group") || (!full.hasPrefix(lowered + " channel") && list.contains("group"))
                     ? "group" : "channel"
                 if !spaces.contains(where: { $0.name == name }) {
-                    spaces.append(DuetSpace(name: name, kind: kind, url: url.absoluteString))
+                    spaces.append(DuetSpace(name: name, kind: kind, url: url.absoluteString,
+                                            unread: full.hasSuffix(", unread") ? true : nil))
                 }
                 return
             }

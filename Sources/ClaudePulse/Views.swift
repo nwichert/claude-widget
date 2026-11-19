@@ -593,7 +593,8 @@ struct PanelView: View {
             ForEach(spaces) { space in
                 let own = rest.filter { $0.space == space.name }
                 let waiting = urgentDuetTasks.filter { $0.space == space.name }.count
-                DuetSpaceRowView(space: space, active: own.count, waiting: waiting) { chats.openDuetSpace(space) }
+                DuetSpaceRowView(space: space, active: own.count, waiting: waiting,
+                                 working: own.filter(\.isWorking).count) { chats.openDuetSpace(space) }
                 ForEach(own.prefix(5)) { task in
                     DuetTaskRowView(task: task,
                                     open: { chats.openDuet(task) },
@@ -1396,6 +1397,58 @@ private struct StatusDot: View {
     }
 }
 
+/// A blue arc turning on a faint ring, as Duet draws beside a task Claude is working on.
+/// Core Animation again, for the same reason as the halo below.
+private struct ArcSpinner: NSViewRepresentable {
+    final class SpinnerView: NSView {
+        private let track = CAShapeLayer()
+        private let arc = CAShapeLayer()
+
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            wantsLayer = true
+            layer?.masksToBounds = false
+            for shape in [track, arc] {
+                shape.fillColor = nil
+                shape.lineCap = .round
+                layer?.addSublayer(shape)
+            }
+            track.strokeColor = NSColor(Palette.working).withAlphaComponent(0.25).cgColor
+            arc.strokeColor = NSColor(Palette.working).cgColor
+            arc.strokeEnd = 0.3
+        }
+
+        required init?(coder: NSCoder) { fatalError("not used") }
+
+        override func layout() {
+            super.layout()
+            let width = max(1.5, bounds.width * 0.17)
+            let path = CGPath(ellipseIn: bounds.insetBy(dx: width / 2, dy: width / 2), transform: nil)
+            for shape in [track, arc] {
+                shape.frame = bounds
+                shape.path = path
+                shape.lineWidth = width
+            }
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            arc.removeAllAnimations()
+            guard window != nil else { return }
+            let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+            spin.fromValue = 0
+            spin.toValue = -2 * Double.pi
+            spin.duration = 0.9
+            spin.repeatCount = .infinity
+            spin.isRemovedOnCompletion = false
+            arc.add(spin, forKey: "spin")
+        }
+    }
+
+    func makeNSView(context: Context) -> SpinnerView { SpinnerView() }
+    func updateNSView(_ view: SpinnerView, context: Context) {}
+}
+
 /// Expanding ring behind a working dot. Drawn with Core Animation so the loop runs in the
 /// window server; a SwiftUI `repeatForever` here cost a few percent CPU all day.
 private struct PulseHalo: NSViewRepresentable {
@@ -1481,18 +1534,26 @@ private struct DuetSpaceRowView: View {
     let active: Int
     /// Tasks of this channel or group that are up in "Needs you".
     let waiting: Int
+    /// Tasks Claude is working on right now.
+    var working = 0
     let open: () -> Void
     @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 8 * scale) {
-            Image(systemName: space.isGroup ? "person.2" : "number")
-                .font(.system(size: 9.5 * scale, weight: .medium))
-                .foregroundStyle(Palette.text3)
-                .frame(width: 12 * scale)
+            if working > 0 {
+                ArcSpinner()
+                    .frame(width: 10 * scale, height: 10 * scale)
+                    .frame(width: 12 * scale)
+            } else {
+                Image(systemName: space.isGroup ? "person.2" : "number")
+                    .font(.system(size: 9.5 * scale, weight: .medium))
+                    .foregroundStyle(Palette.text3)
+                    .frame(width: 12 * scale)
+            }
             Text(space.name)
-                .font(.system(size: 12 * scale, weight: .medium))
-                .foregroundStyle(Palette.text2)
+                .font(.system(size: 12 * scale, weight: space.unread == true ? .semibold : .medium))
+                .foregroundStyle(space.unread == true ? Palette.text : Palette.text2)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 4)
@@ -1505,8 +1566,13 @@ private struct DuetSpaceRowView: View {
                     .font(.system(size: 10 * scale, weight: .medium))
                     .foregroundStyle(Palette.attention)
                     .fixedSize()
+            } else if working > 0 {
+                Text("\(working) working")
+                    .font(.system(size: 10 * scale, weight: .medium))
+                    .foregroundStyle(Palette.working)
+                    .fixedSize()
             } else {
-                Text(active == 0 ? "nothing active" : "\(active) active")
+                Text(active == 0 ? (space.unread == true ? "unread" : "nothing active") : "\(active) active")
                     .font(.system(size: 10 * scale))
                     .foregroundStyle(Palette.text3)
                     .fixedSize()
@@ -1536,16 +1602,25 @@ struct DuetTaskRowView: View {
     @State private var completing = false
 
     private var color: Color {
-        task.needsInput ? Palette.attention : task.readyForReview ? Palette.done : Palette.text3
+        task.needsInput ? Palette.attention : task.readyForReview ? Palette.done
+            : task.isWorking ? Palette.working : Palette.text3
     }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8 * scale) {
-            Image(systemName: task.needsInput ? "questionmark.bubble.fill" : task.readyForReview ? "checkmark.circle" : "circle.dotted")
-                .font(.system(size: 9.5 * scale))
-                .foregroundStyle(color)
-                .frame(width: 12 * scale)
-                .padding(.top, 3 * scale)
+            if task.isWorking {
+                // The same blue spinner Duet shows while Claude is on a task.
+                ArcSpinner()
+                    .frame(width: 10 * scale, height: 10 * scale)
+                    .frame(width: 12 * scale)
+                    .padding(.top, 3 * scale)
+            } else {
+                Image(systemName: task.needsInput ? "questionmark.bubble.fill" : task.readyForReview ? "checkmark.circle" : "circle.dotted")
+                    .font(.system(size: 9.5 * scale))
+                    .foregroundStyle(color)
+                    .frame(width: 12 * scale)
+                    .padding(.top, 3 * scale)
+            }
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(task.title)
