@@ -945,23 +945,40 @@ struct PanelView: View {
         if let url = URL(string: link) { NSWorkspace.shared.open(url) }
     }
 
-    /// A rough guess at what a per-model weekly limit would read if quick turns had gone to a
-    /// lighter model. Only for a limit that names a model, and only with enough turns to go on.
+    /// Which model fits the work a per-model weekly limit has been spent on, and roughly what the
+    /// limit would read if each kind of work had gone to the model that suits it. Only for a
+    /// limit that names a model, and only with enough turns to go on.
     private func modelSwitchHint(_ usage: LiveUsage) -> (text: String, help: String)? {
+        let ladder = ["haiku", "sonnet", "opus", "fable"]
         guard usage.shortLabel == "7d",
               let family = ["fable", "mythos", "opus", "sonnet"].first(where: usage.limit.lowercased().contains),
               let share = modelFit.shares[family], share.turns >= 10 else { return nil }
-        let quick = Int((share.quick * 100).rounded())
-        guard quick >= 3 else { return nil }
-        let lighter = family == "sonnet" ? "Haiku" : "Sonnet"
+        let rung = ladder.firstIndex(of: family == "mythos" ? "fable" : family) ?? 3
+        guard rung > 0 else { return nil }
         let name = family.capitalized
-        let would = Int((Double(usage.percent) * (1 - share.quick)).rounded())
-        return ("Rough guess: quick turns were \(quick)% of \(name) use in Code. On \(lighter) you'd be near \(would)%.",
+        let middle = ladder[rung - 1].capitalized
+        let light = ladder[max(0, rung - 2)].capitalized
+        func pct(_ value: Double) -> Int { Int((value * 100).rounded()) }
+        let heavy = pct(share.heavy), quick = pct(share.quick), everyday = max(0, 100 - heavy - quick)
+        // Only heavy work stays on this model; the rest would count against other limits.
+        let would = Int((Double(usage.percent) * share.heavy).rounded())
+
+        let split = "\(heavy)% heavy, \(everyday)% everyday, \(quick)% quick"
+        let text: String
+        if share.heavy >= 0.5 {
+            guard heavy <= 97 else { return nil }
+            text = "Best fit: \(name) for most of this work (\(split)). \(middle) for the rest would leave you near \(would)%."
+        } else {
+            let best = middle == light || share.everyday >= share.quick ? middle : light
+            text = "Best fit: \(best) for most of this work (\(split)). \(name) for the heavy part only would leave you near \(would)%."
+        }
+        return (text,
                 """
-                From this week's \(share.turns) \(name) turns in Code sessions on this Mac. A quick turn is a short \
-                reply with at most two edits and no subagents, such as a commit or a brief answer, weighted by \
-                all the tokens it used. Chats and Duet are not counted, so if most of your \(name) use is there \
-                this figure can be well off.
+                A guess from this week's \(share.turns) \(name) turns in Code sessions on this Mac, weighted by all the \
+                tokens each used. Quick: a short reply with at most two edits. Heavy: subagents, more than ten \
+                edits, or a very long reply. Everyday: everything between. It judges the size of the work, not \
+                how hard it was. Chats and Duet are not counted, so if most of your \(name) use is there this \
+                can be well off.
                 """)
     }
 

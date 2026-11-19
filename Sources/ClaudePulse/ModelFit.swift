@@ -1,9 +1,10 @@
 import Combine
 import Foundation
 
-/// How much of each model's use in Code sessions went to quick turns: a short reply, a couple of
-/// edits at most, no subagents. Those are the turns a lighter model would have handled, so their
-/// share is a rough guide to what switching would free up on a per-model limit.
+/// How each model's use in Code sessions divides by the weight of the work: quick turns (a short
+/// reply, a couple of edits at most), heavy turns (subagents, long output, many edits) and
+/// everyday work in between. Each kind suits a different model, so the split is a rough guide to
+/// which model fits the work and what switching would free up on a per-model limit.
 ///
 /// Read from the local transcripts under ~/.claude/projects, every ten minutes, re-reading only
 /// the files that changed. Chats and Duet leave no local record, so they are not counted.
@@ -11,15 +12,18 @@ final class ModelFit: ObservableObject {
     static let shared = ModelFit()
 
     struct Share: Equatable {
-        /// Fraction of the model's weighted tokens that went to quick turns, 0...1.
+        /// Fractions of the model's weighted tokens, 0...1; the rest is everyday work.
         var quick: Double
+        var heavy: Double
         var turns: Int
+        var everyday: Double { max(0, 1 - quick - heavy) }
     }
 
     /// By model family ("fable", "opus", "sonnet", "haiku"), for the week `weekStart` began.
     @Published private(set) var shares: [String: Share] = [:]
 
-    private struct Message { var family: String; var cost: Double; var at: String; var quick: Bool; var turn: Int }
+    private enum Weight { case quick, everyday, heavy }
+    private struct Message { var family: String; var cost: Double; var at: String; var weight: Weight; var turn: Int }
     private struct FileResult { var modified: Date; var size: Int; var messages: [Message] }
 
     private let queue = DispatchQueue(label: "claude-pulse.model-fit", qos: .utility)
@@ -85,22 +89,25 @@ final class ModelFit: ObservableObject {
         let from = String(iso.string(from: since).prefix(19))
         var total: [String: Double] = [:]
         var quick: [String: Double] = [:]
+        var heavy: [String: Double] = [:]
         var turns: [String: Set<String>] = [:]
         for (path, result) in cache {
             for message in result.messages where message.at.prefix(19) >= from {
                 total[message.family, default: 0] += message.cost
-                if message.quick { quick[message.family, default: 0] += message.cost }
+                if message.weight == .quick { quick[message.family, default: 0] += message.cost }
+                if message.weight == .heavy { heavy[message.family, default: 0] += message.cost }
                 turns[message.family, default: []].insert("\(path)#\(message.turn)")
             }
         }
         var shares: [String: Share] = [:]
         for (family, cost) in total where cost > 0 {
-            shares[family] = Share(quick: (quick[family] ?? 0) / cost, turns: turns[family]?.count ?? 0)
+            shares[family] = Share(quick: (quick[family] ?? 0) / cost, heavy: (heavy[family] ?? 0) / cost,
+                                   turns: turns[family]?.count ?? 0)
         }
         DispatchQueue.main.async { if self.shares != shares { self.shares = shares } }
     }
 
-    /// One transcript's assistant messages, each marked with whether its turn was a quick one.
+    /// One transcript's assistant messages, each marked with the weight of the turn it belongs to.
     private static func read(_ file: URL, subagent: Bool) -> [Message] {
         guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { return [] }
         let userMark = Data(#""type":"user""#.utf8)
@@ -117,9 +124,10 @@ final class ModelFit: ObservableObject {
         var index = 0
         func close() {
             let output = turn.messages.values.reduce(0) { $0 + $1.output }
-            let quick = !subagent && !turn.heavy && turn.edits <= 2 && output <= 2_000
+            let weight: Weight = subagent || turn.heavy || turn.edits > 10 || output > 12_000 ? .heavy
+                : turn.edits <= 2 && output <= 2_000 ? .quick : .everyday
             for message in turn.messages.values {
-                out.append(Message(family: message.family, cost: message.cost, at: message.at, quick: quick, turn: index))
+                out.append(Message(family: message.family, cost: message.cost, at: message.at, weight: weight, turn: index))
             }
             turn = Turn()
             index += 1
