@@ -66,6 +66,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             DispatchQueue.main.asyncAfter(deadline: .now() + 16) { NSApp.terminate(nil) }
             return
         }
+        // Diagnostic: list Duet's channels and groups and what the Tasks pane holds in each.
+        if let i = CommandLine.arguments.firstIndex(of: "--duet-spaces-debug"), CommandLine.arguments.count > i + 1 {
+            let path = CommandLine.arguments[i + 1]
+            var lines: [String] = []
+            chats.debugDuetSpaces { line in
+                lines.append(line)
+                try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { NSApp.terminate(nil) }
+            return
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--duet-show-test"), CommandLine.arguments.count > i + 1 {
             let path = CommandLine.arguments[i + 1]
             var lines: [String] = []
@@ -229,7 +240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         button.attributedTitle = title
         button.toolTip = "\(waiting) done and waiting on you · \(working) working"
-            + (watching ? " · watching screen activity" : "")
+            + (watching ? " · watching your screen" : "")
     }
 
     @objc private func statusClicked() {
@@ -271,7 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         if Settings.shared.observeScreen {
             menu.addItem(.separator())
-            menu.addItem(withTitle: Settings.shared.observePaused ? "Resume screen watching" : "Pause screen watching",
+            menu.addItem(withTitle: Settings.shared.observePaused ? "Start watching my screen again" : "Stop watching my screen for now",
                          action: #selector(toggleObservePaused), keyEquivalent: "").target = self
         }
 
@@ -382,7 +393,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard canNotify, notifyEnabled, Settings.shared.notifyDuet, Settings.shared.showDuet else { return }
         let content = UNMutableNotificationContent()
         content.title = task.title
-        content.body = "Duet needs your input" + (task.summary.map { ": \($0)" } ?? "")
+        content.body = "Duet needs your input" + (task.space.map { " in \($0)" } ?? "") + (task.summary.map { ": \($0)" } ?? "")
         content.sound = .default
         content.userInfo = ["duetTask": task.title]
         UNUserNotificationCenter.current().add(

@@ -162,12 +162,12 @@ struct PanelView: View {
         let stale: (Date?, TimeInterval) -> Bool = { date, limit in
             date.map { Date().timeIntervalSince($0) > limit } ?? true
         }
-        func age(_ date: Date?) -> String { date.map { "last read \(Format.ago($0)) ago" } ?? "never read" }
+        func age(_ date: Date?) -> String { date.map { "last seen \(Format.ago($0)) ago" } ?? "not seen yet" }
 
         if !store.claudeRunning {
             lines.append(ConnectionLine(name: "Claude Desktop", state: .down, detail: "not running"))
         } else if settings.showCode {
-            lines.append(ConnectionLine(name: "Code sessions", state: .ok, detail: "live, read every 2 seconds"))
+            lines.append(ConnectionLine(name: "Code sessions", state: .ok, detail: "live, checked every 2 seconds"))
         }
         if settings.showGitHub {
             switch github.connection {
@@ -176,43 +176,43 @@ struct PanelView: View {
             case .checking:
                 lines.append(ConnectionLine(name: "GitHub", state: .ok, detail: "checking"))
             case .noCLI:
-                lines.append(ConnectionLine(name: "GitHub", state: .problem, detail: "the gh CLI is not installed"))
+                lines.append(ConnectionLine(name: "GitHub", state: .problem, detail: "gh isn't installed"))
             case .notLoggedIn:
-                lines.append(ConnectionLine(name: "GitHub", state: .problem, detail: "not logged in; run gh auth login"))
+                lines.append(ConnectionLine(name: "GitHub", state: .problem, detail: "not signed in. Run gh auth login"))
             }
         }
         if settings.showChats || settings.showDuet {
             if !chats.trusted {
-                lines.append(ConnectionLine(name: "Chats and Duet", state: .problem, detail: "Accessibility access is off"))
+                lines.append(ConnectionLine(name: "Chats and Duet", state: .problem, detail: "needs Accessibility turned on"))
             } else {
                 // Readable only while on screen, so an old reading is normal here, not a fault.
                 if settings.showDuet {
-                    lines.append(ConnectionLine(name: "Duet", state: .ok, detail: "connected; \(age(chats.duetSeenAt))"))
+                    lines.append(ConnectionLine(name: "Duet", state: .ok, detail: "connected · \(age(chats.duetSeenAt))"))
                 }
                 if settings.showChats {
-                    lines.append(ConnectionLine(name: "Chats", state: .ok, detail: "connected; \(age(chats.seenAt))"))
+                    lines.append(ConnectionLine(name: "Chats", state: .ok, detail: "connected · \(age(chats.seenAt))"))
                 }
             }
         }
         if settings.showArtifacts {
             let old = stale(artifacts.updatedAt, 3 * 86_400)
             lines.append(ConnectionLine(name: "Artifacts", state: old ? .problem : .ok,
-                                        detail: artifacts.updatedAt == nil ? "no snapshot yet" : "snapshot \(Format.ago(artifacts.updatedAt!)) old"))
+                                        detail: artifacts.updatedAt == nil ? "nothing yet" : "updated \(Format.ago(artifacts.updatedAt!)) ago"))
         }
         if settings.showUsage || settings.showSkillIdeas {
             let at = insights.insights?.updatedAt
             lines.append(ConnectionLine(name: "Usage and skill ideas", state: stale(at, 4 * 86_400) ? .problem : .ok,
-                                        detail: at == nil ? "no snapshot yet" : "snapshot \(Format.ago(at!)) old"))
+                                        detail: at == nil ? "nothing yet" : "updated \(Format.ago(at!)) ago"))
         }
         if settings.observeScreen {
             if !chats.trusted {
-                lines.append(ConnectionLine(name: "Screen activity", state: .problem, detail: "Accessibility access is off"))
+                lines.append(ConnectionLine(name: "Screen activity", state: .problem, detail: "needs Accessibility turned on"))
             } else if settings.observePaused {
-                lines.append(ConnectionLine(name: "Screen activity", state: .down, detail: "paused"))
+                lines.append(ConnectionLine(name: "Screen activity", state: .down, detail: "paused for now"))
             } else {
                 let entries = activity.entriesToday
                 lines.append(ConnectionLine(name: "Screen activity", state: .ok,
-                                            detail: "watching; \(entries) \(entries == 1 ? "entry" : "entries") today"))
+                                            detail: entries == 0 ? "watching" : "watching · \(entries) \(entries == 1 ? "note" : "notes") so far today"))
             }
         }
         if settings.notifyOnFinish {
@@ -290,7 +290,7 @@ struct PanelView: View {
         needsYouSection
         if settings.showCode { sessionList(limit: limit) }
         if settings.showGitHub, !otherPullRequests.isEmpty { pullRequestSection }
-        if settings.showDuet, chats.trusted, chats.duetSeenAt != nil, !(otherDuetTasks.isEmpty && !urgentDuetTasks.isEmpty) {
+        if settings.showDuet, chats.trusted, chats.duetSeenAt != nil, !chats.duetSpaces.isEmpty || !(otherDuetTasks.isEmpty && !urgentDuetTasks.isEmpty) {
             duetSection
         }
         if settings.showArtifacts, !otherArtifacts.isEmpty { artifactSection }
@@ -361,7 +361,7 @@ struct PanelView: View {
 
             ForEach(sessions) { row in sessionRow(row) }
             ForEach(tasks) { task in
-                DuetTaskRowView(task: task,
+                DuetTaskRowView(task: task, showSpace: true,
                                 open: { chats.openDuet(task) },
                                 complete: { chats.completeDuet(task) })
             }
@@ -561,18 +561,47 @@ struct PanelView: View {
                 }
             }
             if !settings.isCollapsed("duet") {
+                // Tasks in the main conversation first, then each channel and group with its own.
+                let names = Set(chats.duetSpaces.map(\.name))
+                let main = rest.filter { task in task.space.map { !names.contains($0) } ?? true }
                 if rest.isEmpty {
                     DuetEmptyRowView { chats.openDuet(nil) }
                 } else {
-                    ForEach(rest.prefix(8)) { task in
+                    ForEach(main.prefix(8)) { task in
                         DuetTaskRowView(task: task,
                                         open: { chats.openDuet(task) },
                                         complete: { chats.completeDuet(task) })
                     }
                 }
+                duetSpaceGroup("CHANNELS", chats.duetSpaces.filter { !$0.isGroup }, rest)
+                duetSpaceGroup("GROUPS", chats.duetSpaces.filter { $0.isGroup }, rest)
             }
         }
         .padding(.horizontal, 6)
+    }
+
+    /// One kind of Duet conversation: a small label, then each channel or group with its tasks under it.
+    @ViewBuilder private func duetSpaceGroup(_ title: String, _ spaces: [DuetSpace], _ rest: [DuetTask]) -> some View {
+        if !spaces.isEmpty {
+            Text(title)
+                .font(.system(size: 9 * scale, weight: .semibold))
+                .kerning(0.6)
+                .foregroundStyle(Palette.text3)
+                .padding(.horizontal, 10)
+                .padding(.top, 6 * scale)
+                .padding(.bottom, 1)
+            ForEach(spaces) { space in
+                let own = rest.filter { $0.space == space.name }
+                let waiting = urgentDuetTasks.filter { $0.space == space.name }.count
+                DuetSpaceRowView(space: space, active: own.count, waiting: waiting) { chats.openDuetSpace(space) }
+                ForEach(own.prefix(5)) { task in
+                    DuetTaskRowView(task: task,
+                                    open: { chats.openDuet(task) },
+                                    complete: { chats.completeDuet(task) })
+                        .padding(.leading, 14 * scale)
+                }
+            }
+        }
     }
 
     @ViewBuilder private var artifactSection: some View {
@@ -1389,7 +1418,7 @@ private struct DuetEmptyRowView: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Text("No active Duet tasks")
+            Text("Nothing active in Duet")
                 .font(.system(size: 11 * scale))
                 .foregroundStyle(hovering ? Palette.text2 : Palette.text3)
             Spacer(minLength: 4)
@@ -1413,9 +1442,63 @@ private struct DuetEmptyRowView: View {
     }
 }
 
+/// A Duet channel or group. Its tasks are listed beneath it; the row itself opens it in Duet.
+private struct DuetSpaceRowView: View {
+    @Environment(\.uiScale) private var scale
+    let space: DuetSpace
+    /// Tasks listed under this row.
+    let active: Int
+    /// Tasks of this channel or group that are up in "Needs you".
+    let waiting: Int
+    let open: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 8 * scale) {
+            Image(systemName: space.isGroup ? "person.2" : "number")
+                .font(.system(size: 9.5 * scale, weight: .medium))
+                .foregroundStyle(Palette.text3)
+                .frame(width: 12 * scale)
+            Text(space.name)
+                .font(.system(size: 12 * scale, weight: .medium))
+                .foregroundStyle(Palette.text2)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 4)
+            if hovering {
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 8.5 * scale, weight: .semibold))
+                    .foregroundStyle(Palette.text2)
+            } else if waiting > 0 {
+                Text("\(waiting) \(waiting == 1 ? "needs" : "need") you")
+                    .font(.system(size: 10 * scale, weight: .medium))
+                    .foregroundStyle(Palette.attention)
+                    .fixedSize()
+            } else {
+                Text(active == 0 ? "nothing active" : "\(active) active")
+                    .font(.system(size: 10 * scale))
+                    .foregroundStyle(Palette.text3)
+                    .fixedSize()
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4 * scale)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(hovering ? Palette.raised : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .onTapGesture(perform: open)
+        .help("Open the \(space.name) \(space.kind) in Claude Duet")
+    }
+}
+
 struct DuetTaskRowView: View {
     @Environment(\.uiScale) private var scale
     let task: DuetTask
+    /// Name the task's channel or group on the row, for lists that mix them.
+    var showSpace = false
     let open: () -> Void
     let complete: () -> Void
     @State private var hovering = false
@@ -1460,6 +1543,14 @@ struct DuetTaskRowView: View {
                         }
                         .help("Mark this task complete in Duet. Claude's window visits Duet briefly to do it.")
                     } else {
+                        if showSpace, let space = task.space {
+                            Text(space)
+                                .font(.system(size: 10 * scale))
+                                .foregroundStyle(Palette.text3)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .layoutPriority(-1)
+                        }
                         Text(task.status.lowercased())
                             .font(.system(size: 10 * scale, weight: task.needsInput ? .medium : .regular))
                             .foregroundStyle(color)
@@ -1485,7 +1576,7 @@ struct DuetTaskRowView: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture(perform: open)
-        .help([task.title, task.status, task.summary ?? ""].filter { !$0.isEmpty }.joined(separator: "\n"))
+        .help([task.title, task.space.map { "In \($0)" } ?? "", task.status, task.summary ?? ""].filter { !$0.isEmpty }.joined(separator: "\n"))
     }
 }
 
@@ -1519,12 +1610,12 @@ private struct SkillIdeaRowView: View {
                             .onTapGesture(perform: dismiss)
                             .help("Not interested")
                     } else if idea.source == "screen" {
-                        Text(idea.seen.map { "on screen ~\($0)×" } ?? "from screen activity")
+                        Text(idea.seen.map { "seen ~\($0)× on screen" } ?? "spotted on screen")
                             .font(.system(size: 10 * scale))
                             .foregroundStyle(Palette.text3)
                             .monospacedDigit()
                             .fixedSize()
-                            .help("Suggested from what you were doing on screen, not from your prompts")
+                            .help("Pulse spotted this in what you do on screen, not in what you've asked Claude")
                     } else if let seen = idea.seen {
                         Text("asked ~\(seen)×")
                             .font(.system(size: 10 * scale))
@@ -1787,16 +1878,16 @@ private struct SettingsView: View {
     @ViewBuilder private var screenActivity: some View {
         section("Screen activity") {
             toggle("Watch my screen to suggest skills", $settings.observeScreen)
-            note("Off by default. When on, Claude Pulse records the app in front, its window title and the text visible in that window, every 10 seconds. No screenshots. Text you type and windows with a password field are left out.")
+            note("Every 10 seconds, Pulse notes which app you're in, the window's title and the text you can see in it. It never takes screenshots, and it skips anything you type and any window with a password box.")
             if settings.observeScreen {
                 Group {
-                    note("Stored only on this Mac, in ~/Library/Application Support/ClaudePulse/activity. It can still hold anything that was on screen, and the Claude session that suggests skills reads a summary of it.")
+                    note("It all stays on this Mac, in ~/Library/Application Support/ClaudePulse/activity. Keep in mind it can include anything that was on your screen, and the Claude session that comes up with skill ideas reads a summary of it.")
                     if !accessibilityAllowed {
-                        link("Allow Accessibility access to start watching", action: requestAccessibility)
+                        link("Turn on Accessibility so Pulse can see your windows", action: requestAccessibility)
                     }
-                    toggle("Paused", $settings.observePaused)
-                    choice("Keep for", $settings.observeRetentionDays, [(1, "1d"), (7, "7d"), (14, "14d")])
-                    Text("NOT WATCHED")
+                    toggle("Pause for now", $settings.observePaused)
+                    choice("Keep what's recorded for", $settings.observeRetentionDays, [(1, "1d"), (7, "7d"), (14, "14d")])
+                    Text("NEVER WATCH THESE APPS")
                         .font(.system(size: 9 * scale, weight: .semibold))
                         .kerning(0.6)
                         .foregroundStyle(Palette.text3)
@@ -1809,7 +1900,7 @@ private struct SettingsView: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                             Spacer(minLength: 8)
-                            link("Watch") { settings.observeExcludedApps.removeAll { $0 == bundle } }
+                            link("Remove") { settings.observeExcludedApps.removeAll { $0 == bundle } }
                         }
                     }
                     let candidates = activity.recentApps.filter { !settings.observeExcludedApps.contains($0.bundle) }
@@ -1819,7 +1910,7 @@ private struct SettingsView: View {
                                 Button(app.name) { settings.observeExcludedApps.append(app.bundle) }
                             }
                         } label: {
-                            Text("Stop watching an app…")
+                            Text("Add an app you've used recently…")
                                 .font(.system(size: 11 * scale, weight: .medium))
                                 .foregroundStyle(Palette.attention)
                         }
@@ -1827,7 +1918,7 @@ private struct SettingsView: View {
                         .menuIndicator(.hidden)
                         .fixedSize()
                     }
-                    link("Delete collected activity") { activity.deleteAll() }
+                    link("Delete everything recorded so far") { activity.deleteAll() }
                 }
                 .padding(.leading, 12)
             }
@@ -1886,7 +1977,7 @@ private struct SettingsView: View {
                     }
                     .padding(.leading, 12)
                 } else {
-                    Text("Claude Pulse will not send any notifications. The panel still shows everything.")
+                    Text("Pulse won't send you any notifications. Everything still shows up in the panel.")
                         .font(.system(size: 10.5 * scale))
                         .foregroundStyle(Palette.text3)
                         .fixedSize(horizontal: false, vertical: true)

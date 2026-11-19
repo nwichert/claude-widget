@@ -57,10 +57,25 @@ struct DuetTask: Identifiable, Equatable, Codable {
     var status: String
     var summary: String?
     var url: String?
+    /// The channel or group it belongs to, by name. Nil for tasks in the main conversation.
+    var space: String?
     var id: String { title }
 
     var needsInput: Bool { status.lowercased().contains("input") }
     var readyForReview: Bool { status.lowercased().contains("review") }
+}
+
+/// A channel or group from Claude Duet's sidebar.
+struct DuetSpace: Identifiable, Equatable, Codable {
+    var name: String
+    /// "channel" or "group", from how Duet labels the row.
+    var kind: String
+    var url: String?
+    var id: String { url ?? "\(kind):\(name)" }
+
+    var isGroup: Bool { kind == "group" }
+    /// The last part of the address, e.g. "chan_01GH…", which task links and the page URL repeat.
+    var key: String? { url.flatMap { URL(string: $0)?.lastPathComponent } }
 }
 
 /// Reads the "Recents" chat list out of Claude Desktop's sidebar through the Accessibility API.
@@ -77,6 +92,12 @@ final class ChatReader: ObservableObject {
     /// Like chats, Duet is only readable while it is on screen.
     @Published private(set) var duetTasks: [DuetTask] = []
     @Published private(set) var duetSeenAt: Date?
+    /// Duet's channels and groups, as of the last time its sidebar was on screen.
+    @Published private(set) var duetSpaces: [DuetSpace] = []
+    private let duetSpacesKey = "duetSpaces"
+    // The reader queue's own copies, so merging never reads the published values off the main thread.
+    private var lastTasks: [DuetTask] = []
+    private var lastSpaces: [DuetSpace] = []
     /// Claude's own live usage figure, read off the usage ring whenever a page that shows it is open.
     @Published private(set) var liveUsage: LiveUsage?
     private let usageKey = "liveUsage"
@@ -125,10 +146,16 @@ final class ChatReader: ObservableObject {
         if let data = UserDefaults.standard.data(forKey: duetKey),
            let cached = try? JSONDecoder().decode([DuetTask].self, from: data) {
             duetTasks = cached
+            lastTasks = cached
             // Whatever already needed input when the widget last looked is not news after a restart.
             duetAlerted = Set(cached.filter { $0.needsInput }.map(\.title))
             let t = UserDefaults.standard.double(forKey: duetSeenKey)
             duetSeenAt = t > 0 ? Date(timeIntervalSince1970: t) : nil
+        }
+        if let data = UserDefaults.standard.data(forKey: duetSpacesKey),
+           let cached = try? JSONDecoder().decode([DuetSpace].self, from: data) {
+            duetSpaces = cached
+            lastSpaces = cached
         }
     }
 
@@ -218,15 +245,40 @@ final class ChatReader: ObservableObject {
 
     // MARK: - Duet
 
-    /// Duet is the page at claude.ai/messages. When it is showing, read the Active tab of its Tasks pane.
+    /// Duet is the page at claude.ai/messages. When it is showing, read its channels and groups,
+    /// then the Active tab of its Tasks pane.
+    ///
+    /// The Tasks pane follows the conversation on screen: "Everything" lists every task, while a
+    /// channel or group lists only its own ("Tasks in #name"). So a reading taken inside a channel
+    /// replaces that channel's tasks and leaves the rest as they were last seen.
     private func readDuet(_ root: AXUIElement) {
-        guard let page = duetPage(root), let pane = find(in: page, budget: 1_500, where: { e in
+        guard let page = duetPage(root) else { return }
+        // Nil means the sidebar is hidden, which says nothing about what exists.
+        let freshSpaces = readDuetSpaces(page)
+        if let freshSpaces, freshSpaces != lastSpaces {
+            lastSpaces = freshSpaces
+            if let data = try? JSONEncoder().encode(freshSpaces) {
+                UserDefaults.standard.set(data, forKey: duetSpacesKey)
+            }
+            DispatchQueue.main.async { self.duetSpaces = freshSpaces }
+        }
+        let spaces = lastSpaces
+
+        guard let pane = find(in: page, budget: 1_500, where: { e in
             self.attr(e, kAXSubroleAttribute) as? String == "AXLandmarkRegion" && self.label(e) == "Tasks"
         }) else { return }
+
+        // Which conversation is showing: its key is the last part of the page address.
+        let pageKey = (attr(page, kAXURLAttribute) as? URL).flatMap { url -> String? in
+            let last = url.lastPathComponent
+            return last == "messages" || last.isEmpty ? nil : last
+        }
 
         var group = ""
         var activeTab = true
         var sawTabs = false
+        var emptyState = false
+        var paneSpace: String?
         var tasks: [DuetTask] = []
         var visited = 0
         func walk(_ e: AXUIElement, _ depth: Int) {
@@ -241,8 +293,16 @@ final class ChatReader: ObservableObject {
                     activeTab = label(e) == "Active" || staticTexts(in: e, depth: 0).first == "Active"
                 }
             case "AXHeading":
-                // "Ready for review 3 tasks" -> "Ready for review"
-                group = label(e).replacingOccurrences(of: #"\s+\d+\s+tasks?$"#, with: "", options: .regularExpression)
+                let text = label(e)
+                if text.hasPrefix("Tasks in #") {
+                    paneSpace = String(text.dropFirst("Tasks in #".count))
+                } else if text == "Nothing on your list yet" {
+                    // A channel with no tasks at all has no tabs, only this.
+                    emptyState = true
+                } else {
+                    // "Ready for review 3 tasks" -> "Ready for review"
+                    group = text.replacingOccurrences(of: #"\s+\d+\s+tasks?$"#, with: "", options: .regularExpression)
+                }
             case "AXLink":
                 guard let title = staticTexts(in: e, depth: 0).first, !group.isEmpty else { break }
                 // The link's own label reads "Title, Status, summary".
@@ -251,8 +311,14 @@ final class ChatReader: ObservableObject {
                 let prefix = "\(title), \(group), "
                 if full.hasPrefix(prefix) { summary = String(full.dropFirst(prefix.count)) }
                 let url = (attr(e, kAXURLAttribute) as? URL)?.absoluteString
+                // In "Everything" a task may still say where it lives, in its address or its label.
+                let home = spaces.first { space in
+                    if let key = space.key, let url, url.contains(key) { return true }
+                    return full.contains("#\(space.name)")
+                }
                 if !tasks.contains(where: { $0.title == title }) {
-                    tasks.append(DuetTask(title: title, status: group, summary: summary?.isEmpty == false ? summary : nil, url: url))
+                    tasks.append(DuetTask(title: title, status: group, summary: summary?.isEmpty == false ? summary : nil,
+                                          url: url, space: home?.name))
                 }
                 return  // nothing useful below a task link
             default:
@@ -261,11 +327,37 @@ final class ChatReader: ObservableObject {
             for child in children(e) { walk(child, depth + 1) }
         }
         walk(pane, 0)
+
+        var current: String?
+        if let pageKey {
+            current = spaces.first { $0.key == pageKey }?.name ?? paneSpace
+            // Inside a conversation that cannot be named: nothing here can be filed correctly.
+            guard current != nil else { return }
+        }
         // With a task's detail open, the pane shows that task instead of the list and has no tabs.
         // That is not an empty list, so leave the remembered tasks alone.
-        guard sawTabs, activeTab else { return }
+        guard (sawTabs && activeTab) || (current != nil && emptyState) else { return }
+
+        if let current {
+            let titles = Set(tasks.map(\.title))
+            for i in tasks.indices { tasks[i].space = current }
+            tasks = lastTasks.filter { $0.space != current && !titles.contains($0.title) } + tasks
+        } else {
+            // Keep what an earlier look inside a channel established, where this list does not say.
+            let known = Dictionary(lastTasks.compactMap { task in task.space.map { (task.title, $0) } },
+                                   uniquingKeysWith: { first, _ in first })
+            for i in tasks.indices where tasks[i].space == nil { tasks[i].space = known[tasks[i].title] }
+        }
+        // A channel or group that has been deleted no longer holds anything.
+        if freshSpaces != nil {
+            let names = Set(spaces.map(\.name))
+            for i in tasks.indices {
+                if let space = tasks[i].space, space != current, !names.contains(space) { tasks[i].space = nil }
+            }
+        }
 
         tasks.sort { ($0.needsInput ? 0 : $0.readyForReview ? 1 : 2) < ($1.needsInput ? 0 : $1.readyForReview ? 1 : 2) }
+        lastTasks = tasks
 
         // Alert once per task when it starts needing input. The very first list ever read only
         // sets the baseline. Nothing fires while Claude is the front app: you can see Duet then.
@@ -294,6 +386,175 @@ final class ChatReader: ObservableObject {
             if self.duetTasks != tasks { self.duetTasks = tasks }
             self.duetSeenAt = now
             fresh.forEach { self.onDuetNeedsInput?($0) }
+        }
+    }
+
+    /// Diagnostic: Duet's channel and group list, and what the Tasks pane shows in each of them.
+    /// Visits every channel and group, then puts the window back where it was.
+    func debugDuetSpaces(trace: @escaping (String) -> Void) {
+        queue.async { [weak self] in
+            guard let self, let root = self.claudeRoot() else { trace("no Claude window"); return }
+            let wasOnDuet = self.duetPage(root) != nil
+            let wasOnCode = self.scanSidebar(root).map { !$0.chatTab } ?? false
+            if !wasOnDuet { self.navigateToDuet(root, trace: trace) }
+            var page: AXUIElement?
+            for _ in 0..<20 where page == nil {
+                Thread.sleep(forTimeInterval: 0.4)
+                page = self.duetPage(root)
+            }
+            guard let page else { trace("Duet did not open"); return }
+
+            func dump(_ e: AXUIElement, _ depth: Int, _ left: inout Int) {
+                left -= 1
+                guard left > 0, depth < 40 else { return }
+                let role = self.attr(e, kAXRoleAttribute) as? String ?? "?"
+                let texts = [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute]
+                    .map { (self.attr(e, $0) as? String) ?? (self.attr(e, $0) as? NSNumber)?.stringValue ?? "" }
+                let url = (self.attr(e, kAXURLAttribute) as? URL)?.absoluteString ?? ""
+                let sub = self.attr(e, kAXSubroleAttribute) as? String ?? ""
+                if role != "AXGroup" || !sub.isEmpty || texts.contains(where: { !$0.isEmpty }) {
+                    trace(String(repeating: " ", count: depth) + "\(role) \(sub) t=[\(texts[0].prefix(90))] d=[\(texts[1].prefix(90))] v=[\(texts[2].prefix(90))] \(url)")
+                }
+                for child in self.children(e) { dump(child, depth + 1, &left) }
+            }
+            func nav() -> AXUIElement? {
+                self.find(in: page, budget: 400, where: { e in
+                    self.attr(e, kAXSubroleAttribute) as? String == "AXLandmarkNavigation"
+                })
+            }
+            func dumpTasks(_ name: String) {
+                Thread.sleep(forTimeInterval: 1.6)
+                let here = self.duetPage(root)
+                trace("== \(name): page url \((here.flatMap { self.attr($0, kAXURLAttribute) as? URL })?.absoluteString ?? "-")")
+                guard let here else { return }
+                var pane = self.find(in: here, budget: 2_500, where: { e in
+                    self.attr(e, kAXSubroleAttribute) as? String == "AXLandmarkRegion" && self.label(e) == "Tasks"
+                })
+                if pane == nil, let button = self.find(in: here, budget: 400, where: { e in
+                    self.attr(e, kAXRoleAttribute) as? String == "AXButton" && self.label(e).hasPrefix("Tasks")
+                }) {
+                    AXUIElementPerformAction(button, kAXPressAction as CFString)
+                    Thread.sleep(forTimeInterval: 1.0)
+                    pane = self.find(in: here, budget: 2_500, where: { e in
+                        self.attr(e, kAXSubroleAttribute) as? String == "AXLandmarkRegion" && self.label(e) == "Tasks"
+                    })
+                }
+                guard let pane else { trace("no Tasks pane"); return }
+                if let active = self.find(in: pane, budget: 200, where: { e in
+                    self.attr(e, kAXRoleAttribute) as? String == "AXRadioButton" && self.staticTexts(in: e, depth: 0).first ?? self.label(e) == "Active"
+                }) {
+                    AXUIElementPerformAction(active, kAXPressAction as CFString)
+                    Thread.sleep(forTimeInterval: 0.8)
+                }
+                var left = 500
+                dump(pane, 0, &left)
+            }
+
+            trace("== navigation")
+            if let nav = nav() { var left = 300; dump(nav, 0, &left) } else { trace("no navigation landmark") }
+
+            var links: [(String, AXUIElement)] = []
+            func collect(_ e: AXUIElement, _ depth: Int) {
+                guard depth < 12 else { return }
+                if self.attr(e, kAXRoleAttribute) as? String == "AXLink",
+                   let url = (self.attr(e, kAXURLAttribute) as? URL)?.absoluteString,
+                   url.contains("/messages/") {
+                    links.append((self.label(e), e))
+                    return
+                }
+                for child in self.children(e) { collect(child, depth + 1) }
+            }
+            if let nav = nav() { collect(nav, 0) }
+            dumpTasks("as found")
+            for (name, link) in links {
+                AXUIElementPerformAction(link, kAXPressAction as CFString)
+                dumpTasks(name)
+            }
+            if let nav = nav(), let everything = self.find(in: nav, budget: 200, where: { e in
+                self.attr(e, kAXRoleAttribute) as? String == "AXLink" && self.staticTexts(in: e, depth: 0).first == "Everything"
+            }) {
+                AXUIElementPerformAction(everything, kAXPressAction as CFString)
+                dumpTasks("Everything")
+            }
+            if !wasOnDuet, wasOnCode, let url = URL(string: "claude://code/continue?session=last") {
+                DispatchQueue.main.async { NSWorkspace.shared.open(url) }
+                trace("returned to the last Code session")
+            }
+            trace("done")
+        }
+    }
+
+    /// The channels and groups in Duet's sidebar, or nil when the sidebar is not on screen.
+    ///
+    /// Each one is a link to `claude.ai/messages/<key>` whose label ends in what it is:
+    /// "return-migration channel". Lists are labelled too ("Channels"), as a second opinion.
+    private func readDuetSpaces(_ page: AXUIElement) -> [DuetSpace]? {
+        guard let nav = duetNavigation(page) else { return nil }
+        var spaces: [DuetSpace] = []
+        var visited = 0
+        func walk(_ e: AXUIElement, _ depth: Int, _ list: String) {
+            visited += 1
+            guard visited < 600, depth < 20 else { return }
+            let role = attr(e, kAXRoleAttribute) as? String ?? ""
+            var list = list
+            if role == "AXList" {
+                list = label(e).lowercased()
+            } else if role == "AXLink" {
+                guard let url = attr(e, kAXURLAttribute) as? URL,
+                      url.lastPathComponent != "messages", url.path.hasPrefix("/messages/"),
+                      let name = staticTexts(in: e, depth: 0).first ?? Optional(label(e)), !name.isEmpty
+                else { return }
+                let full = label(e).lowercased()
+                let kind = full.hasSuffix(" group") || (!full.hasSuffix(" channel") && list.contains("group"))
+                    ? "group" : "channel"
+                if !spaces.contains(where: { $0.name == name }) {
+                    spaces.append(DuetSpace(name: name, kind: kind, url: url.absoluteString))
+                }
+                return
+            }
+            for child in children(e) { walk(child, depth + 1, list) }
+        }
+        walk(nav, 0, "")
+        return spaces
+    }
+
+    private func duetNavigation(_ page: AXUIElement) -> AXUIElement? {
+        find(in: page, budget: 400, where: { e in
+            self.attr(e, kAXSubroleAttribute) as? String == "AXLandmarkNavigation"
+        })
+    }
+
+    /// Waits for Duet to be on screen, then shows the named channel or group, or "Everything"
+    /// for nil. The Tasks pane only lists a task while its own conversation or Everything is showing.
+    private func showDuetSpace(_ name: String?, root: AXUIElement, trace: ((String) -> Void)? = nil) {
+        var page: AXUIElement?
+        for _ in 0..<12 where page == nil {
+            page = duetPage(root)
+            if page == nil { Thread.sleep(forTimeInterval: 0.35) }
+        }
+        guard let page, let nav = duetNavigation(page) else { return }
+        let wanted = name ?? "Everything"
+        guard let link = find(in: nav, budget: 400, where: { e in
+            self.attr(e, kAXRoleAttribute) as? String == "AXLink" && self.staticTexts(in: e, depth: 0).first == wanted
+        }) else { trace?("no sidebar entry for \(wanted)"); return }
+        func bare(_ e: AXUIElement) -> String? {
+            (attr(e, kAXURLAttribute) as? URL)?.absoluteString.components(separatedBy: "?").first
+        }
+        if let here = bare(page), here == bare(link) { return }
+        AXUIElementPerformAction(link, kAXPressAction as CFString)
+        trace?("showed \(wanted)")
+        Thread.sleep(forTimeInterval: 1.0)
+    }
+
+    /// Brings Claude forward on a channel or group.
+    func openDuetSpace(_ space: DuetSpace) {
+        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: claudeBundleID).first {
+            app.activate()
+        }
+        queue.async { [weak self] in
+            guard let self, let root = self.claudeRoot() else { return }
+            if self.duetPage(root) == nil { self.navigateToDuet(root, trace: nil) }
+            self.showDuetSpace(space.name, root: root)
         }
     }
 
@@ -332,6 +593,7 @@ final class ChatReader: ObservableObject {
             let wasOnCode = self.scanSidebar(root).map { !$0.chatTab } ?? false
             trace?("was on Duet: \(wasOnDuet), was on Code: \(wasOnCode)")
             if !wasOnDuet { self.navigateToDuet(root, trace: trace) }
+            self.showDuetSpace(task.space, root: root, trace: trace)
 
             var done = false
             var revealedPane = false
@@ -408,6 +670,7 @@ final class ChatReader: ObservableObject {
             if !done { trace?("could not find the task's checkbox") }
 
             if done, !dryRun {
+                self.lastTasks.removeAll { $0.title == task.title }
                 DispatchQueue.main.async {
                     self.duetTasks.removeAll { $0.title == task.title }
                     if let data = try? JSONEncoder().encode(self.duetTasks) {
@@ -447,6 +710,7 @@ final class ChatReader: ObservableObject {
             trace?("duet already open: \(alreadyOpen)")
             if !alreadyOpen { self.navigateToDuet(root, trace: trace) }
             guard let task else { return }
+            self.showDuetSpace(task.space, root: root, trace: trace)
             // First choice: Duet's own "Show in main channel", from the task's More menu. Duet knows
             // which message the task belongs to, so nothing has to be searched for.
             if self.showInMainChannel(task, root: root, trace: trace) { return }

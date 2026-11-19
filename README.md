@@ -12,7 +12,7 @@ It lists your Claude Code sessions, Duet tasks, artifacts, recent chats and open
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- | ---------------------------------- |
 | **Code**          | Each Claude Code session: working, done, or waiting on your answer; project folder; model; how full its context is; git branch and changes | Claude's local session files and transcripts; `git`                                   | Live (every 2 seconds)             |
 | **Pull requests** | Open PRs you wrote or are asked to review, with checks and review status                                                                   | The GitHub CLI (`gh`)                                                                 | Every 3 minutes                    |
-| **Duet tasks**    | Tasks from Claude Duet's Active tab, with "Needs input" in orange                                                                          | Read off Duet's screen through Accessibility                                          | Only while Duet is open in the app |
+| **Duet tasks**    | Duet's channels and groups, each with its Active tasks; "Needs input" in orange                                                            | Read off Duet's screen through Accessibility                                          | Only while Duet is open in the app |
 | **Artifacts**     | Artifacts you edited recently, ones newly shared with you, and comment threads that tag you                                                | A snapshot file written by a scheduled Claude session                                 | As often as that session runs      |
 | **Chats**         | Your recent chats, with hide and "load more"                                                                                               | Read off Claude's sidebar through Accessibility                                       | Only while the Claude tab is open  |
 | **Your usage**    | 14-day sessions, prompts and tokens by project, plus skills worth creating                                                                 | `tools/usage_stats.py` for the counts; a scheduled Claude session for the suggestions | As often as that session runs      |
@@ -103,15 +103,15 @@ It deliberately leaves out:
 
 - **anything you type.** Text fields and text areas contribute their label only. That also means the body of a document you are editing is not recorded;
 - **any window with a password field**, which is recorded by title only;
-- **apps on the "Not watched" list** (password managers, System Settings and Messages to start with; add your own from the apps recently in front);
+- **apps on the "Never watch these apps" list** (password managers, System Settings and Messages to start with; add your own from the apps recently in front);
 - **private and incognito browser windows**, recognised by their title;
 - **the lock screen and screen saver**, and Claude Pulse itself.
 
-E-mail addresses, long numbers and things that look like keys or tokens are replaced with `[email]`, `[number]` and `[token]` before anything is written. This is pattern matching and will miss things: the log can still hold anything that was readable on screen. Use the "Not watched" list and the pause switch for anything sensitive.
+E-mail addresses, long numbers and things that look like keys or tokens are replaced with `[email]`, `[number]` and `[token]` before anything is written. This is pattern matching and will miss things: the log can still hold anything that was readable on screen. Use the "Never watch these apps" list and the pause switch for anything sensitive.
 
-While watching, the menu-bar item shows an eye, and its right-click menu has **Pause screen watching**. A pause lasts until you resume or relaunch.
+While watching, the menu-bar item shows an eye, and its right-click menu has **Stop watching my screen for now**. A pause lasts until you resume or relaunch.
 
-Entries are written to `~/Library/Application Support/ClaudePulse/activity/YYYY-MM-DD.jsonl`, readable only by your user account. Files older than the "Keep for" setting (7 days by default) are deleted automatically, and **Delete collected activity** removes all of them at once.
+Entries are written to `~/Library/Application Support/ClaudePulse/activity/YYYY-MM-DD.jsonl`, readable only by your user account. Files older than the "Keep what's recorded for" setting (7 days by default) are deleted automatically, and **Delete everything recorded so far** removes all of them at once.
 
 Claude Pulse itself still never calls a model. To turn the log into suggestions, add this to the daily scheduled task that already writes `insights.json`:
 
@@ -148,6 +148,7 @@ The readers are written to degrade rather than crash: a missing field leaves a r
 Known limits:
 
 - **Chats and Duet are only read while they are on screen** in Claude Desktop. Otherwise the widget shows the last list it saw, marked with its age. A Duet task that changes while Duet is closed is not noticed until Duet is opened again.
+- **Duet's Tasks pane follows the conversation that is open.** "Everything" lists every task; a channel or group lists only its own. A task is filed under a channel or group once it has been seen there, so one created in a channel while you were on Everything shows in the main list until you open that channel.
 - **Chats have no working or waiting state** and no token counts; only a title and a badge are available.
 - **Context percentages are inferred.** Claude does not record a model's context window size anywhere readable, so the widget assumes 1M tokens once it has seen a model go past 200k, and 200k otherwise.
 - **The usage limit in the footer is read from Claude Desktop's usage ring.** It shows whichever limit the ring is showing (5-hour or weekly) and updates only while a page with that ring is open; otherwise it is the last reading, shown with its age.
