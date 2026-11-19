@@ -59,8 +59,15 @@ struct DuetTask: Identifiable, Equatable, Codable {
     var url: String?
     /// The channel or group it belongs to, by name. Nil for tasks in the main conversation.
     var space: String?
+    /// True once you have had it in front of you in Duet at its current status. It stops asking
+    /// for you then, until its status changes.
+    var seen: Bool?
     var id: String { title }
 
+    /// Waiting on an answer you have not looked at yet.
+    var asking: Bool { needsInput && seen != true }
+    /// Waiting on an answer or a review you have not looked at yet.
+    var wantsYou: Bool { (needsInput || readyForReview) && seen != true }
     var needsInput: Bool { status.lowercased().contains("input") }
     var readyForReview: Bool { status.lowercased().contains("review") }
     /// Claude is on it right now; Duet shows a spinner beside these.
@@ -427,7 +434,25 @@ final class ChatReader: ObservableObject {
             }
         }
 
-        tasks.sort { ($0.needsInput ? 0 : $0.readyForReview ? 1 : 2) < ($1.needsInput ? 0 : $1.readyForReview ? 1 : 2) }
+        // What you have already looked at stays looked at until its status changes.
+        let before = Dictionary(lastTasks.map { ($0.title, $0) }, uniquingKeysWith: { first, _ in first })
+        for i in tasks.indices {
+            tasks[i].seen = before[tasks[i].title].flatMap { $0.status == tasks[i].status ? $0.seen : nil }
+        }
+        // With Claude in front and you at the keyboard, the conversation on screen is one you are
+        // reading: its questions and reviews have reached you. "Everything" counts for the tasks
+        // that live in no channel.
+        let claudeIsFront = !peeking && DispatchQueue.main.sync {
+            NSWorkspace.shared.frontmostApplication?.bundleIdentifier == claudeBundleID
+        }
+        if claudeIsFront, let anyInput = CGEventType(rawValue: ~0),
+           CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyInput) < 120 {
+            for i in tasks.indices where tasks[i].space == current && (tasks[i].needsInput || tasks[i].readyForReview) {
+                tasks[i].seen = true
+            }
+        }
+
+        tasks.sort { ($0.asking ? 0 : $0.wantsYou ? 1 : 2) < ($1.asking ? 0 : $1.wantsYou ? 1 : 2) }
         lastTasks = tasks
 
         // Alert once per task when it starts needing input. The very first list ever read only
@@ -436,9 +461,6 @@ final class ChatReader: ObservableObject {
         var fresh: [DuetTask] = []
         if let alerted = duetAlerted {
             // A background look is over in a moment, so what it finds is news even with Claude in front.
-            let claudeIsFront = !peeking && DispatchQueue.main.sync {
-                NSWorkspace.shared.frontmostApplication?.bundleIdentifier == claudeBundleID
-            }
             if !claudeIsFront {
                 fresh = tasks.filter { $0.needsInput && !alerted.contains($0.title) }
                 duetAlerted = waiting

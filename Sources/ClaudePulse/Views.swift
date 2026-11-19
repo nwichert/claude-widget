@@ -235,7 +235,7 @@ struct PanelView: View {
                                 action: { open(row) }))
         }
         if settings.showDuet {
-            for task in chats.duetTasks where task.needsInput {
+            for task in chats.duetTasks where task.asking {
                 out.append(Headline(id: "duet-" + task.id, icon: "questionmark.bubble.fill", color: Palette.attention,
                                     label: "Duet", text: task.title,
                                     action: { chats.openDuet(task) }))
@@ -310,9 +310,9 @@ struct PanelView: View {
     // their home sections and shown once, at the top.
     private var urgentSessions: [SessionRow] { settings.showCode ? store.rows.filter { $0.wantsYou } : [] }
     private var urgentDuetTasks: [DuetTask] {
-        settings.showDuet ? chats.duetTasks.filter { $0.needsInput || $0.readyForReview } : []
+        settings.showDuet ? chats.duetTasks.filter(\.wantsYou) : []
     }
-    private var otherDuetTasks: [DuetTask] { chats.duetTasks.filter { !$0.needsInput && !$0.readyForReview } }
+    private var otherDuetTasks: [DuetTask] { chats.duetTasks.filter { !$0.wantsYou } }
     private var urgentArtifacts: [ArtifactItem] {
         settings.showArtifacts ? artifacts.items.filter { ($0.mentions ?? 0) > 0 || $0.newShareAt != nil } : []
     }
@@ -595,7 +595,7 @@ struct PanelView: View {
             ForEach(spaces) { space in
                 let own = rest.filter { $0.space == space.name }
                 let waiting = urgentDuetTasks.filter { $0.space == space.name }.count
-                let asking = urgentDuetTasks.contains { $0.space == space.name && $0.needsInput }
+                let asking = urgentDuetTasks.contains { $0.space == space.name && $0.asking }
                 DuetSpaceRowView(space: space, active: own.count, waiting: waiting, asking: asking,
                                  working: own.filter(\.isWorking).count) { chats.openDuetSpace(space) }
                 ForEach(own.prefix(5)) { task in
@@ -1636,7 +1636,7 @@ struct DuetTaskRowView: View {
     @State private var completing = false
 
     private var color: Color {
-        task.needsInput ? Palette.attention : task.readyForReview ? Palette.done
+        task.asking ? Palette.attention : task.readyForReview ? Palette.done
             : task.isWorking ? Palette.working : Palette.text3
     }
 
@@ -1649,7 +1649,7 @@ struct DuetTaskRowView: View {
                     .frame(width: 12 * scale)
                     .padding(.top, 3 * scale)
             } else {
-                Image(systemName: task.needsInput ? "questionmark.bubble.fill" : task.readyForReview ? "checkmark.circle" : "circle.dotted")
+                Image(systemName: task.asking ? "questionmark.bubble.fill" : task.readyForReview ? "checkmark.circle" : "circle.dotted")
                     .font(.system(size: 9.5 * scale))
                     .foregroundStyle(color)
                     .frame(width: 12 * scale)
@@ -1658,8 +1658,8 @@ struct DuetTaskRowView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(task.title)
-                        .font(.system(size: 12 * scale, weight: task.needsInput ? .semibold : .regular))
-                        .foregroundStyle(task.needsInput ? Palette.text : Palette.text2)
+                        .font(.system(size: 12 * scale, weight: task.asking ? .semibold : .regular))
+                        .foregroundStyle(task.asking ? Palette.text : Palette.text2)
                         .lineLimit(1)
                     Spacer(minLength: 4)
                     if completing {
@@ -1692,7 +1692,7 @@ struct DuetTaskRowView: View {
                                 .layoutPriority(-1)
                         }
                         Text(task.status.lowercased())
-                            .font(.system(size: 10 * scale, weight: task.needsInput ? .medium : .regular))
+                            .font(.system(size: 10 * scale, weight: task.asking ? .medium : .regular))
                             .foregroundStyle(color)
                             .fixedSize()
                     }
@@ -1709,13 +1709,13 @@ struct DuetTaskRowView: View {
         .padding(.vertical, 5 * scale)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(task.needsInput
+                .fill(task.asking
                       ? Palette.attention.opacity(hovering ? 0.16 : 0.09)
                       : (hovering ? Palette.raised : Color.clear))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(task.needsInput ? Palette.attention.opacity(0.4) : Color.clear, lineWidth: 1)
+                .strokeBorder(task.asking ? Palette.attention.opacity(0.4) : Color.clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
