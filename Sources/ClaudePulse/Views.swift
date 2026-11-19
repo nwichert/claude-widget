@@ -65,6 +65,8 @@ struct PanelView: View {
     @ObservedObject var activity: ActivityObserver
     @ObservedObject private var settings = Settings.shared
     var open: (SessionRow) -> Void
+    /// `--demo-eye-hover` shows the eye's label in a snapshot, where nothing can hover.
+    @State private var hoveringEye = CommandLine.arguments.contains("--demo-eye-hover")
 
     /// Cap while the panel sizes itself, so a busy day cannot run it off the screen.
     private let autoMaxRows = 12
@@ -98,7 +100,7 @@ struct PanelView: View {
     @ViewBuilder private var expanded: some View {
         let manual = layout.manualHeight
         VStack(alignment: .leading, spacing: 0) {
-            header
+            header.zIndex(1)  // so the eye's hover label draws over the list below
             notificationWarning
             if layout.showSettings {
                 if manual {
@@ -856,13 +858,37 @@ struct PanelView: View {
                     if !chats.trusted { chats.requestAccess() }
                 }
             }
-            .help(blocked
-                  ? "Pulse can't watch your screen until Accessibility is turned on. Click to allow it."
-                  : on
-                    ? "Pulse is watching your screen to suggest skills. Click to stop."
-                    : settings.observeScreen
-                      ? "Screen watching is paused. Click to start again."
-                      : "Pulse is not watching your screen. Click to start.")
+            .onHover { hoveringEye = $0 }
+            // A label of our own rather than a system tooltip: those take a second or two to
+            // appear and often do not show at all over a panel that never becomes the active window.
+            .overlay(alignment: .topTrailing) {
+                if hoveringEye {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(blocked ? "Screen watching can't start"
+                             : on ? "Screen watching is on"
+                             : settings.observeScreen ? "Screen watching is paused" : "Screen watching is off")
+                            .font(.system(size: 11 * scale, weight: .semibold))
+                            .foregroundStyle(Palette.text)
+                        Text(blocked
+                             ? "Pulse needs Accessibility turned on first. Click to allow it."
+                             : on
+                               ? "Pulse notes what's on your screen so it can suggest skills worth building. Click to stop."
+                               : "When it's on, Pulse notes what's on your screen so it can suggest skills worth building. Click to start.")
+                            .font(.system(size: 10.5 * scale))
+                            .foregroundStyle(Palette.text2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 7)
+                    .frame(width: 210 * scale, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Palette.raised))
+                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Palette.border, lineWidth: 1))
+                    .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
+                    .offset(x: 40, y: 22)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+                }
+            }
     }
 
     private static func openLink(_ link: String) {
@@ -2057,6 +2083,15 @@ private struct SettingsView: View {
                 toggle("Chats", $settings.showChats)
                 toggle("Skills worth creating", $settings.showSkillIdeas)
                 toggle("Your usage and limits", $settings.showUsage)
+            }
+            if settings.showDuet {
+                section("Duet") {
+                    choice("Look in on running tasks", $settings.duetPeekMinutes,
+                           [(0, "Off"), (3, "3m"), (5, "5m"), (10, "10m")])
+                    note(settings.duetPeekMinutes == 0
+                         ? "Pulse only sees Duet while it's on screen, so a task that needs you can sit unnoticed while you're in a Code session."
+                         : "Pulse only sees Duet while it's on screen. While a task is running, Claude's window flips to Duet for a few seconds and back to your Code session, so you hear about it when the task needs you. It waits if you're using Claude.")
+                }
             }
             screenActivity
             section("Appearance") {

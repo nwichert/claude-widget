@@ -24,6 +24,7 @@ final class Settings: ObservableObject {
         static let showUsage = "showUsage"
         static let showDuet = "showDuet"
         static let dismissedIdeas = "dismissedIdeas"
+        static let duetPeekMinutes = "duetPeekMinutes"
         static let observeScreen = "observeScreen"
         static let observePaused = "observePaused"
         static let observeExcludedApps = "observeExcludedApps"
@@ -37,6 +38,10 @@ final class Settings: ObservableObject {
         "com.apple.keychainaccess", "com.apple.Passwords", "com.apple.systempreferences",
         "com.apple.MobileSMS",
     ]
+
+    /// How often to send Claude's window to Duet for a look while a Duet task is running and Duet
+    /// is not on screen; 0 never does.
+    @Published var duetPeekMinutes: Int { didSet { defaults.set(duetPeekMinutes, forKey: Key.duetPeekMinutes) } }
 
     /// Off unless you switch it on: record the front app, window title and visible text so a
     /// Claude session can suggest skills from work done outside Claude.
@@ -136,6 +141,7 @@ final class Settings: ObservableObject {
         collapsedSections = UserDefaults.standard.stringArray(forKey: "collapsedSections") ?? ["skills", "usage"]
         dismissedIdeas = UserDefaults.standard.stringArray(forKey: Key.dismissedIdeas) ?? []
         hiddenChats = UserDefaults.standard.stringArray(forKey: Key.hiddenChats) ?? []
+        duetPeekMinutes = Self.int(Key.duetPeekMinutes, default: 5)
         observeScreen = Self.bool(Key.observeScreen, default: false)
         observeExcludedApps = Self.excludedApps()
         observeRetentionDays = Self.int(Key.observeRetentionDays, default: 7)

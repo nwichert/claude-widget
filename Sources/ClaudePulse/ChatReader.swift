@@ -101,6 +101,9 @@ final class ChatReader: ObservableObject {
     private let duetSpacesKey = "duetSpaces"
     // The reader queue's own copies, so merging never reads the published values off the main thread.
     private var lastTasks: [DuetTask] = []
+    /// When Duet's tasks were last read, and when the window was last sent to look. Reader queue only.
+    private var lastDuetReadAt = Date.distantPast
+    private var lastPeekAt = Date.distantPast
     private var lastSpaces: [DuetSpace] = []
     /// Claude's own live usage figure, read off the usage ring whenever a page that shows it is open.
     @Published private(set) var liveUsage: LiveUsage?
@@ -155,6 +158,7 @@ final class ChatReader: ObservableObject {
             duetAlerted = Set(cached.filter { $0.needsInput }.map(\.title))
             let t = UserDefaults.standard.double(forKey: duetSeenKey)
             duetSeenAt = t > 0 ? Date(timeIntervalSince1970: t) : nil
+            if let duetSeenAt { lastDuetReadAt = duetSeenAt }
         }
         if let data = UserDefaults.standard.data(forKey: duetSpacesKey),
            let cached = try? JSONDecoder().decode([DuetSpace].self, from: data) {
@@ -207,7 +211,10 @@ final class ChatReader: ObservableObject {
         let isTrusted = AXIsProcessTrusted()
         if isTrusted != trusted { DispatchQueue.main.async { self.trusted = isTrusted } }
         guard isTrusted, let root = claudeRoot() else { return }
-        if Settings.bool(Settings.Key.showDuet, default: true) { readDuet(root) }
+        if Settings.bool(Settings.Key.showDuet, default: true) {
+            readDuet(root)
+            peekAtDuetIfDue(root)
+        }
         // The ring sits deep in the page, so finding it is the costliest read here: every third pass.
         tickCount += 1
         if tickCount % 3 == 1, Settings.bool(Settings.Key.showUsage, default: true) { readUsage(root) }
@@ -255,8 +262,8 @@ final class ChatReader: ObservableObject {
     /// The Tasks pane follows the conversation on screen: "Everything" lists every task, while a
     /// channel or group lists only its own ("Tasks in #name"). So a reading taken inside a channel
     /// replaces that channel's tasks and leaves the rest as they were last seen.
-    private func readDuet(_ root: AXUIElement) {
-        guard let page = duetPage(root) else { return }
+    private func readDuet(_ root: AXUIElement, trace: ((String) -> Void)? = nil, peeking: Bool = false) {
+        guard let page = duetPage(root) else { trace?("Duet is not on screen"); return }
         // Nil means the sidebar is hidden, which says nothing about what exists.
         let freshSpaces = readDuetSpaces(page)
         if let freshSpaces, freshSpaces != lastSpaces {
@@ -268,9 +275,10 @@ final class ChatReader: ObservableObject {
         }
         let spaces = lastSpaces
 
-        guard let pane = find(in: page, budget: 1_500, where: { e in
+        // The pane can be hidden; the conversation's own task cards are still worth reading then.
+        let pane = find(in: page, budget: 1_500, where: { e in
             self.attr(e, kAXSubroleAttribute) as? String == "AXLandmarkRegion" && self.label(e) == "Tasks"
-        }) else { return }
+        })
 
         // Which conversation is showing: its key is the last part of the page address.
         let pageKey = (attr(page, kAXURLAttribute) as? URL).flatMap { url -> String? in
@@ -321,9 +329,16 @@ final class ChatReader: ObservableObject {
                 // The link's own label reads "Title, Status, summary". The status is taken from
                 // there, because the heading above is a status in one view and a channel in another.
                 var summary: String?
-                var status = group
                 let full = label(e)
-                if full.hasPrefix(title + ", ") {
+                trace?("listed link under [\(group)] in [\(region ?? "-")]: \(full.prefix(120))")
+                // The heading above is a status in a channel's own list but the channel's name in
+                // "Everything", and the label puts the status before or after the title. So prefer
+                // a status Duet is known to use, wherever it sits in the label.
+                var status = full.components(separatedBy: ", ").first(where: Self.isDuetStatus) ?? ""
+                if !status.isEmpty {
+                    let lead = "\(title), \(status), "
+                    if full.hasPrefix(lead) { summary = String(full.dropFirst(lead.count)) }
+                } else if full.hasPrefix(title + ", ") {
                     let rest = full.dropFirst(title.count + 2)
                     if let comma = rest.range(of: ", ") {
                         if rest[..<comma.lowerBound].count <= 40 {
@@ -334,6 +349,7 @@ final class ChatReader: ObservableObject {
                         status = String(rest)
                     }
                 }
+                if status.isEmpty { status = region == nil ? group : "Active" }
                 guard !status.isEmpty else { break }
                 let url = (attr(e, kAXURLAttribute) as? URL)?.absoluteString
                 // In "Everything" a task may still say where it lives, in its address or its label.
@@ -351,7 +367,8 @@ final class ChatReader: ObservableObject {
             }
             for child in children(e) { walk(child, depth + 1, region) }
         }
-        walk(pane, 0, nil)
+        if let pane { walk(pane, 0, nil) }
+        trace?("pane: \(pane != nil), page key: \(pageKey ?? "-"), tabs: \(sawTabs), active tab: \(activeTab), empty: \(emptyState), listed: \(tasks.count)")
 
         var current: String?
         if let pageKey {
@@ -360,10 +377,32 @@ final class ChatReader: ObservableObject {
             guard current != nil else { return }
         }
         // With a task's detail open, the pane shows that task instead of the list and has no tabs.
-        // That is not an empty list, so leave the remembered tasks alone.
-        guard (sawTabs && activeTab) || (current != nil && emptyState) else { return }
-
-        if let current {
+        // That is not an empty list, so the remembered tasks stay. What can still be read then is
+        // the status Duet prints on each task's card in the conversation and on the open task,
+        // which is how a task that starts needing input is noticed while its detail is open.
+        let listReadable = pane != nil && ((sawTabs && activeTab) || (current != nil && emptyState))
+        if !listReadable {
+            let cards = duetCards(page: page, pane: pane, spaces: spaces, current: current, trace: trace)
+            trace?("list not readable; cards: " + cards.map { "\($0.title.prefix(30)) = \($0.status)" }.joined(separator: "; "))
+            guard !cards.isEmpty else { return }
+            tasks = lastTasks
+            for card in cards {
+                let status = card.status.lowercased()
+                let finished = ["done", "resolved", "complete", "cancel", "dismiss"].contains { status.contains($0) }
+                let live = status.contains("working") || status.contains("input") || status.contains("review")
+                if let i = tasks.firstIndex(where: { $0.title == card.title }) {
+                    if finished {
+                        tasks.remove(at: i)
+                    } else if live {
+                        tasks[i].status = card.status
+                        if let summary = card.summary { tasks[i].summary = summary }
+                        if tasks[i].space == nil { tasks[i].space = card.space }
+                    }
+                } else if live {
+                    tasks.append(card)
+                }
+            }
+        } else if let current {
             let titles = Set(tasks.map(\.title))
             for i in tasks.indices { tasks[i].space = current }
             tasks = lastTasks.filter { $0.space != current && !titles.contains($0.title) } + tasks
@@ -389,7 +428,8 @@ final class ChatReader: ObservableObject {
         let waiting = Set(tasks.filter { $0.needsInput }.map(\.title))
         var fresh: [DuetTask] = []
         if let alerted = duetAlerted {
-            let claudeIsFront = DispatchQueue.main.sync {
+            // A background look is over in a moment, so what it finds is news even with Claude in front.
+            let claudeIsFront = !peeking && DispatchQueue.main.sync {
                 NSWorkspace.shared.frontmostApplication?.bundleIdentifier == claudeBundleID
             }
             if !claudeIsFront {
@@ -403,6 +443,7 @@ final class ChatReader: ObservableObject {
             duetAlerted = waiting
         }
         let now = Date()
+        lastDuetReadAt = now
         if let data = try? JSONEncoder().encode(tasks) {
             UserDefaults.standard.set(data, forKey: duetKey)
             UserDefaults.standard.set(now.timeIntervalSince1970, forKey: duetSeenKey)
@@ -507,6 +548,182 @@ final class ChatReader: ObservableObject {
             }
             trace("done")
         }
+    }
+
+    /// Duet can only be read while it is on screen, so a task that starts needing input while you
+    /// are in a Code session would go unnoticed. While a task is known to be running, this sends
+    /// Claude's window to Duet for a moment every few minutes, reads the list, and puts it back.
+    ///
+    /// It only does so from a Code session, which can be returned to exactly, and never while you
+    /// are using Claude: the window would change under your hands and your typing would land in Duet.
+    private func peekAtDuetIfDue(_ root: AXUIElement, trace: ((String) -> Void)? = nil, force: Bool = false) {
+        let minutes = Settings.int(Settings.Key.duetPeekMinutes, default: 5)
+        guard force || minutes > 0 else { return }
+        let interval = TimeInterval(max(1, minutes) * 60)
+        let now = Date()
+        if !force {
+            guard lastTasks.contains(where: \.isWorking),
+                  now.timeIntervalSince(lastDuetReadAt) >= interval,
+                  now.timeIntervalSince(lastPeekAt) >= interval else { return }
+        }
+        guard duetPage(root) == nil else { return }
+        guard let scan = scanSidebar(root), !scan.chatTab else { trace?("not on a Code session; leaving the window alone"); return }
+        let claudeIsFront = DispatchQueue.main.sync {
+            NSWorkspace.shared.frontmostApplication?.bundleIdentifier == claudeBundleID
+        }
+        if claudeIsFront, let anyInput = CGEventType(rawValue: ~0) {
+            let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyInput)
+            guard idle >= 20 else { trace?("you are using Claude; not now"); return }
+        }
+        lastPeekAt = now
+        trace?("looking in on Duet")
+
+        navigateToDuet(root, trace: trace)
+        showDuetSpace(nil, root: root, trace: trace)
+        if let page = duetPage(root) {
+            // The page fills in over a second or two. Wait for the Tasks list and its tabs, bringing
+            // the pane back if it is hidden and stepping out of a task whose detail was left open.
+            var revealed = false
+            var steppedBack = false
+            var ready = false
+            for _ in 0..<16 where !ready {
+                Thread.sleep(forTimeInterval: 0.4)
+                guard let pane = find(in: page, budget: 2_500, where: { e in
+                    self.attr(e, kAXSubroleAttribute) as? String == "AXLandmarkRegion" && self.label(e) == "Tasks"
+                }) else {
+                    if !revealed, let button = find(in: page, budget: 400, where: { e in
+                        self.attr(e, kAXRoleAttribute) as? String == "AXButton" && self.label(e).hasPrefix("Tasks")
+                    }) {
+                        revealed = AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+                    }
+                    continue
+                }
+                if let active = find(in: pane, budget: 300, where: { e in
+                    self.attr(e, kAXRoleAttribute) as? String == "AXRadioButton"
+                        && (self.staticTexts(in: e, depth: 0).first ?? self.label(e)) == "Active"
+                }) {
+                    // Duet opens on "Up next" when nothing is active; the Active tab is the one that is read.
+                    if (attr(active, kAXValueAttribute) as? NSNumber)?.intValue != 1 {
+                        AXUIElementPerformAction(active, kAXPressAction as CFString)
+                        Thread.sleep(forTimeInterval: 0.7)
+                    }
+                    ready = true
+                } else if !steppedBack, let back = find(in: pane, budget: 300, where: { e in
+                    self.attr(e, kAXRoleAttribute) as? String == "AXButton" && self.label(e) == "Back"
+                }) {
+                    steppedBack = AXUIElementPerformAction(back, kAXPressAction as CFString) == .success
+                    trace?("left the open task to reach the list")
+                }
+            }
+            trace?("task list ready: \(ready)")
+            readDuet(root, trace: trace, peeking: true)
+        } else {
+            trace?("Duet did not open")
+        }
+
+        // Back to the Code session, without bringing Claude in front of whatever you are doing.
+        if let url = URL(string: "claude://code/continue?session=last") {
+            DispatchQueue.main.async {
+                let quiet = NSWorkspace.OpenConfiguration()
+                quiet.activates = false
+                NSWorkspace.shared.open(url, configuration: quiet)
+            }
+            trace?("returned to the last Code session")
+        }
+    }
+
+    /// Diagnostic: one background look at Duet right now, whatever the timer says.
+    func debugDuetPeek(trace: @escaping (String) -> Void) {
+        queue.async { [weak self] in
+            guard let self, let root = self.claudeRoot() else { trace("no Claude window"); return }
+            self.peekAtDuetIfDue(root, trace: trace, force: true)
+            trace("tasks now: " + self.lastTasks.map { "\($0.title.prefix(30)) = \($0.status) in \($0.space ?? "main")" }.joined(separator: "; "))
+        }
+    }
+
+    /// Diagnostic: one pass of the Duet reader, saying what it found.
+    func debugDuetRead(trace: @escaping (String) -> Void) {
+        queue.async { [weak self] in
+            guard let self, let root = self.claudeRoot() else { trace("no Claude window"); return }
+            self.readDuet(root, trace: trace)
+            trace("tasks now: " + self.lastTasks.map { "\($0.title.prefix(30)) = \($0.status) in \($0.space ?? "main")" }.joined(separator: "; "))
+        }
+    }
+
+    /// The statuses Duet is known to give a task.
+    private static func isDuetStatus(_ text: String) -> Bool {
+        ["working", "needs input", "ready for review", "done", "resolved", "completed", "cancelled"]
+            .contains(text.lowercased())
+    }
+
+    /// Task statuses readable without the Tasks list: the cards Duet posts in the conversation
+    /// ("Title · Needs input"), and the header of a task whose detail is open ("Working. …").
+    /// Later entries win, and the open task's header is last.
+    private func duetCards(page: AXUIElement, pane: AXUIElement?, spaces: [DuetSpace], current: String?,
+                           trace: ((String) -> Void)? = nil) -> [DuetTask] {
+        var cards: [DuetTask] = []
+        func add(_ card: DuetTask) {
+            cards.removeAll { $0.title == card.title }
+            cards.append(card)
+        }
+        var visited = 0
+        func walk(_ e: AXUIElement, _ depth: Int) {
+            visited += 1
+            guard visited < 3_000, depth < 50 else { return }
+            if attr(e, kAXRoleAttribute) as? String == "AXLink",
+               let url = (attr(e, kAXURLAttribute) as? URL)?.absoluteString, url.contains("task=") {
+                // The link's label reads "Title, Status" or "Title, Status, summary", whatever the
+                // card happens to draw. Some cards also spell it out as "Title · Status".
+                let texts = staticTexts(in: e, depth: 0).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                let full = label(e)
+                trace?("task link: \(full.prefix(110))")
+                // Cards word it several ways: "Title, Working, summary", "Title, Added, Ready for
+                // review", "Ready for review, Title". So look for a status Duet is known to use,
+                // wherever it sits, and take the title from the text that is not one.
+                let isStatus = Self.isDuetStatus
+                let parts = full.components(separatedBy: ", ")
+                guard let title = texts.first(where: { !isStatus($0) && $0 != "·" && $0 != "Added" }) else { return }
+                let status = parts.first(where: isStatus) ?? texts.first(where: isStatus)
+                var summary: String?
+                if let status, full.hasPrefix("\(title), \(status), ") {
+                    summary = String(full.dropFirst("\(title), \(status), ".count))
+                }
+                if let status, !status.isEmpty, status.count <= 40 {
+                    let home = spaces.first { space in space.key.map { url.contains($0) } ?? false }?.name ?? current
+                    add(DuetTask(title: title, status: status, summary: summary?.isEmpty == false ? summary : nil,
+                                 url: url, space: home))
+                }
+                return
+            }
+            for child in children(e) { walk(child, depth + 1) }
+        }
+        walk(page, 0)
+        trace?("card scan visited \(visited) elements")
+
+        if let pane, let header = find(in: pane, budget: 200, where: { e in
+            self.attr(e, kAXSubroleAttribute) as? String == "AXSectionHeader"
+        }), find(in: header, budget: 20, where: { e in
+            self.attr(e, kAXRoleAttribute) as? String == "AXButton" && self.label(e) == "Back"
+        }) != nil {
+            // The header holds the Back button (with the title in it), then the status, either as
+            // text ("Working. Find the values.") or as a button ("Ready for review. 1 update").
+            let title = staticTexts(in: header, depth: 0).first
+            let line = children(header).map { label($0) }.first { text in
+                !text.isEmpty && text != "Back" && text != title && !text.hasPrefix("More for") && !text.hasPrefix("Hide")
+            }
+            trace?("open task header: \(title ?? "-") / \(line ?? "-")")
+            if let title, let line {
+                let parts = line.components(separatedBy: ". ")
+                let status = parts[0].trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+                if !status.isEmpty, status.count <= 40 {
+                    // The rest is a summary only while Claude is working; otherwise it is a count of updates.
+                    let summary = parts.count > 1 && status.lowercased().contains("working")
+                        ? parts.dropFirst().joined(separator: ". ") : nil
+                    add(DuetTask(title: title, status: status, summary: summary, url: nil, space: current))
+                }
+            }
+        }
+        return cards
     }
 
     /// The channels and groups in Duet's sidebar, or nil when the sidebar is not on screen.

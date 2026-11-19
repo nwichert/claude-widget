@@ -148,7 +148,9 @@ The readers are written to degrade rather than crash: a missing field leaves a r
 Known limits:
 
 - **Chats and Duet are only read while they are on screen** in Claude Desktop. Otherwise the widget shows the last list it saw, marked with its age. A Duet task that changes while Duet is closed is not noticed until Duet is opened again.
+- **Looking in on Duet.** To cover that gap for running tasks, the widget sends Claude's window to Duet for a few seconds every 5 minutes (Settings → Duet; 3, 5 or 10 minutes, or off) while a Duet task it knows about is working, then returns to your Code session. It only does this from a Code session, and waits while you are using Claude. A task started while Duet was off screen is not known to be running, so it does not trigger a look.
 - **Duet's Tasks pane follows the conversation that is open.** "Everything" lists every task; a channel or group lists only its own. A task is filed under a channel or group once it has been seen there, so one created in a channel while you were on Everything shows in the main list until you open that channel.
+- **With a Duet task's detail open, or the Tasks pane hidden, there is no list to read.** The widget then takes each task's status from the cards in the conversation and from the open task's header, so a task that starts needing input is still noticed. Tasks it cannot see there keep their last known status.
 - **Chats have no working or waiting state** and no token counts; only a title and a badge are available.
 - **Context percentages are inferred.** Claude does not record a model's context window size anywhere readable, so the widget assumes 1M tokens once it has seen a model go past 200k, and 200k otherwise.
 - **The usage limit in the footer is read from Claude Desktop's usage ring.** It shows whichever limit the ring is showing (5-hour or weekly) and updates only while a page with that ring is open; otherwise it is the last reading, shown with its age.

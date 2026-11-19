@@ -66,6 +66,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             DispatchQueue.main.asyncAfter(deadline: .now() + 16) { NSApp.terminate(nil) }
             return
         }
+        // Diagnostic: one background look at Duet right now, from a Code session and back.
+        if let i = CommandLine.arguments.firstIndex(of: "--duet-peek-debug"), CommandLine.arguments.count > i + 1 {
+            let path = CommandLine.arguments[i + 1]
+            var lines: [String] = []
+            chats.debugDuetPeek { line in
+                lines.append(line)
+                try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20) { NSApp.terminate(nil) }
+            return
+        }
+        // Diagnostic: one pass of the Duet reader over whatever Claude is showing, without navigating.
+        if let i = CommandLine.arguments.firstIndex(of: "--duet-read-debug"), CommandLine.arguments.count > i + 1 {
+            let path = CommandLine.arguments[i + 1]
+            var lines: [String] = []
+            chats.debugDuetRead { line in
+                lines.append(line)
+                try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { NSApp.terminate(nil) }
+            return
+        }
         // Diagnostic: list Duet's channels and groups and what the Tasks pane holds in each.
         if let i = CommandLine.arguments.firstIndex(of: "--duet-spaces-debug"), CommandLine.arguments.count > i + 1 {
             let path = CommandLine.arguments[i + 1]
