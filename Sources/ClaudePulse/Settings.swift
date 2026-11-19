@@ -116,6 +116,29 @@ final class Settings: ObservableObject {
         } else {
             collapsedSections.append(id)
         }
+        // Opening a section is looking at it; folding it starts a fresh baseline.
+        collapsedSeen[id] = nil
+    }
+
+    /// For each folded section, the items it held when folded plus any you have since seen or
+    /// cleared. Anything else that turns up while it is folded is new and goes under Needs You.
+    @Published private(set) var collapsedSeen: [String: [String]] {
+        didSet { defaults.set(collapsedSeen, forKey: "collapsedSeen") }
+    }
+
+    /// Adds `ids` to what a folded section has seen; the first call for a section sets its baseline.
+    func markSeen(_ section: String, _ ids: [String]) {
+        let known = collapsedSeen[section] ?? []
+        let added = ids.filter { !known.contains($0) }
+        guard collapsedSeen[section] == nil || !added.isEmpty else { return }
+        collapsedSeen[section] = Array((known + added).suffix(500))
+    }
+
+    /// Items in a folded section that were not there when it was folded and have not been seen since.
+    func newWhileCollapsed(_ section: String, _ ids: [String]) -> [String] {
+        guard isCollapsed(section), let known = collapsedSeen[section] else { return [] }
+        let seen = Set(known)
+        return ids.filter { !seen.contains($0) }
     }
 
     private let defaults = UserDefaults.standard
@@ -143,6 +166,7 @@ final class Settings: ObservableObject {
         scaleText = Self.bool("scaleText", default: true)
         ignoredPullRequests = (UserDefaults.standard.dictionary(forKey: "ignoredPullRequests") as? [String: String]) ?? [:]
         collapsedSections = UserDefaults.standard.stringArray(forKey: "collapsedSections") ?? ["skills", "usage"]
+        collapsedSeen = (UserDefaults.standard.dictionary(forKey: "collapsedSeen") as? [String: [String]]) ?? [:]
         dismissedIdeas = UserDefaults.standard.stringArray(forKey: Key.dismissedIdeas) ?? []
         hiddenChats = UserDefaults.standard.stringArray(forKey: Key.hiddenChats) ?? []
         duetPeekMinutes = Self.int(Key.duetPeekMinutes, default: 2)

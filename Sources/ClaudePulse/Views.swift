@@ -247,6 +247,11 @@ struct PanelView: View {
                                 label: "Answered", text: chat.title,
                                 action: { chats.open(chat) }))
         }
+        for item in freshItems {
+            out.append(Headline(id: "new-" + item.id, icon: item.icon, color: Palette.attention,
+                                label: "New in \(item.sectionName)", text: item.title,
+                                action: { settings.markSeen(item.section, [item.key]); item.open() }))
+        }
         for row in store.rows where row.state == .needsYou {
             out.append(Headline(id: "done-" + row.id, icon: "checkmark.circle.fill", color: Palette.done,
                                 label: "Done", text: row.title,
@@ -353,6 +358,57 @@ struct PanelView: View {
         return chats.chats.filter { $0.waitingOnYou && chats.waitingChats[$0.title] == nil }
     }
 
+    /// Something that turned up in a folded section after it was folded.
+    struct FreshItem: Identifiable {
+        let section: String
+        let sectionName: String
+        let key: String
+        let icon: String
+        let title: String
+        let open: () -> Void
+        var id: String { section + "|" + key }
+    }
+
+    /// Sections that tell you when something new arrives while they are folded: what each holds
+    /// (`all`), what is already under Needs You (`urgent`), and the rest, which could be new.
+    private var foldWatch: [(section: String, all: [String], urgent: [String])] {
+        var out: [(String, [String], [String])] = []
+        if settings.showArtifacts { out.append(("artifacts", artifacts.items.map(\.id), urgentArtifacts.map(\.id))) }
+        if settings.showGitHub { out.append(("prs", visiblePullRequests.map(\.id), urgentPullRequests.map(\.id))) }
+        if settings.showDuet { out.append(("duet", chats.duetTasks.map(\.id), urgentDuetTasks.map(\.id))) }
+        return out
+    }
+
+    /// Sets a baseline for each newly folded section, and counts anything already under Needs
+    /// You as seen so it is not reported twice.
+    private func syncFoldBaselines() {
+        for watch in foldWatch where settings.isCollapsed(watch.section) {
+            settings.markSeen(watch.section, settings.collapsedSeen[watch.section] == nil ? watch.all : watch.urgent)
+        }
+    }
+
+    private var freshItems: [FreshItem] {
+        var out: [FreshItem] = []
+        let artifactIDs = Set(settings.newWhileCollapsed("artifacts", otherArtifacts.map(\.id)))
+        for item in otherArtifacts where artifactIDs.contains(item.id) {
+            out.append(FreshItem(section: "artifacts", sectionName: "Artifacts", key: item.id, icon: "doc.richtext",
+                                 title: item.title, open: { artifacts.opened(item); Self.openLink(item.url) }))
+        }
+        let prIDs = Set(settings.newWhileCollapsed("prs", otherPullRequests.map(\.id)))
+        for pr in otherPullRequests where prIDs.contains(pr.id) {
+            out.append(FreshItem(section: "prs", sectionName: "Pull requests", key: pr.id, icon: "arrow.triangle.pull",
+                                 title: "\(pr.repo) #\(pr.number) · \(pr.title)", open: { Self.openLink(pr.url) }))
+        }
+        let taskIDs = Set(settings.newWhileCollapsed("duet", otherDuetTasks.map(\.id)))
+        for task in otherDuetTasks where taskIDs.contains(task.id) {
+            out.append(FreshItem(section: "duet", sectionName: "Duet", key: task.id, icon: "checklist",
+                                 title: task.title, open: { chats.openDuet(task) }))
+        }
+        return out
+    }
+
+    private func freshCount(_ section: String) -> Int { freshItems.filter { $0.section == section }.count }
+
     @ViewBuilder private var needsYouSection: some View {
         let sessions = urgentSessions
         let tasks = urgentDuetTasks
@@ -360,7 +416,8 @@ struct PanelView: View {
         let prs = urgentPullRequests
         let answered = answeredChats
         let waiting = waitingChats
-        let count = sessions.count + tasks.count + answered.count + waiting.count + shared.count + prs.count
+        let fresh = freshItems
+        let count = sessions.count + tasks.count + answered.count + waiting.count + shared.count + prs.count + fresh.count
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
                 Text("NEEDS YOU")
@@ -405,8 +462,15 @@ struct PanelView: View {
                                 dismiss: { artifacts.dismiss(item) })
             }
             ForEach(prs) { pr in PullRequestRowView(pr: pr) { ignore(pr) } }
+            ForEach(fresh) { item in
+                FreshItemRowView(item: item,
+                                 open: { settings.markSeen(item.section, [item.key]); item.open() },
+                                 dismiss: { settings.markSeen(item.section, [item.key]) })
+            }
         }
         .padding(.horizontal, 6)
+        .onChange(of: foldWatch.map { "\($0.section):\(settings.isCollapsed($0.section)):\($0.all.joined(separator: ","))" },
+                  initial: true) { _, _ in syncFoldBaselines() }
     }
 
     // MARK: Skills and usage
@@ -529,7 +593,7 @@ struct PanelView: View {
     }
 
     /// A section title. With an `id` it is a disclosure: click to fold the section, remembered.
-    private func sectionHeader<Trailing: View>(_ title: String, id: String? = nil, count: Int? = nil,
+    private func sectionHeader<Trailing: View>(_ title: String, id: String? = nil, count: Int? = nil, fresh: Int = 0,
                                                @ViewBuilder trailing: () -> Trailing) -> some View {
         HStack(spacing: 6) {
             if let id {
@@ -545,6 +609,12 @@ struct PanelView: View {
                 Text("\(count)")
                     .font(.system(size: 10.5 * scale, weight: .medium))
                     .monospacedDigit()
+            }
+            if fresh > 0 {
+                Text("· \(fresh) new")
+                    .font(.system(size: 10.5 * scale, weight: .semibold))
+                    .foregroundStyle(Palette.attention)
+                    .help("New since you folded this section. They are listed under Needs You.")
             }
             trailing()
         }
@@ -564,7 +634,7 @@ struct PanelView: View {
     @ViewBuilder private var pullRequestSection: some View {
         let rest = otherPullRequests
         VStack(alignment: .leading, spacing: 1) {
-            sectionHeader("PULL REQUESTS", id: "prs", count: rest.count) { Spacer() }
+            sectionHeader("PULL REQUESTS", id: "prs", count: rest.count, fresh: freshCount("prs")) { Spacer() }
             if !settings.isCollapsed("prs") {
                 ForEach(rest.prefix(8)) { pr in
                     PullRequestRowView(pr: pr) { ignore(pr) }
@@ -577,7 +647,7 @@ struct PanelView: View {
     @ViewBuilder private var duetSection: some View {
         let rest = otherDuetTasks
         VStack(alignment: .leading, spacing: 1) {
-            sectionHeader("DUET TASKS", id: "duet", count: rest.isEmpty ? nil : rest.count) {
+            sectionHeader("DUET TASKS", id: "duet", count: rest.isEmpty ? nil : rest.count, fresh: freshCount("duet")) {
                 // The header is a way into Duet whether or not there are tasks.
                 Image(systemName: "arrow.up.right")
                     .font(.system(size: 8 * scale, weight: .semibold))
@@ -649,7 +719,7 @@ struct PanelView: View {
         let others = rest.filter { !$0.isActive && !$0.hasNewComments && $0.isCollaboration }
         let shown = Array((fresh + active + others).prefix(max(8, fresh.count)))
         VStack(alignment: .leading, spacing: 1) {
-            sectionHeader("ARTIFACTS", id: "artifacts", count: shown.count) {
+            sectionHeader("ARTIFACTS", id: "artifacts", count: shown.count, fresh: freshCount("artifacts")) {
                 Spacer()
                 if let at = artifacts.updatedAt {
                     TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -820,6 +890,7 @@ struct PanelView: View {
         let waiting = store.rows.filter { $0.state == .needsYou }.count
         let asking = store.rows.filter { $0.state == .needsInput }.count
         let working = store.rows.filter { $0.state == .working }.count
+        let fresh = freshItems.count
         return HStack(spacing: 10) {
             LogoMark()
                 .frame(width: 15 * scale, height: 15 * scale)
@@ -834,11 +905,13 @@ struct PanelView: View {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 10) {
                     if asking > 0 { Tally(count: asking, label: asking == 1 ? "needs answer" : "need answers", color: Palette.attention) }
+                    if fresh > 0 { Tally(count: fresh, label: "new", color: Palette.attention) }
                     if waiting > 0 { Tally(count: waiting, label: "done", color: Palette.done) }
                     if working > 0 { Tally(count: working, label: "working", color: Palette.working) }
                 }
                 HStack(spacing: 8) {
                     if asking > 0 { Tally(count: asking, label: "", color: Palette.attention) }
+                    if fresh > 0 { Tally(count: fresh, label: "", color: Palette.attention) }
                     if waiting > 0 { Tally(count: waiting, label: "", color: Palette.done) }
                     if working > 0 { Tally(count: working, label: "", color: Palette.working) }
                 }
@@ -1985,6 +2058,59 @@ private struct PullRequestRowView: View {
         case .reviewRequested, .checksFailing, .changesRequested: return Palette.attention
         case .checksRunning, .awaitingReview, .draft: return Palette.text3
         }
+    }
+}
+
+/// Something that arrived in a folded section, shown under Needs You until opened or cleared.
+private struct FreshItemRowView: View {
+    @Environment(\.uiScale) private var scale
+    let item: PanelView.FreshItem
+    let open: () -> Void
+    let dismiss: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8 * scale) {
+            Image(systemName: item.icon)
+                .font(.system(size: 9.5 * scale))
+                .foregroundStyle(Palette.attention)
+                .frame(width: 12 * scale)
+                .padding(.top, 3 * scale)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(item.title)
+                    .font(.system(size: 12 * scale, weight: .semibold))
+                    .foregroundStyle(Palette.text)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Text("new in \(item.sectionName)")
+                    .font(.system(size: 10 * scale, weight: .medium))
+                    .foregroundStyle(Palette.attention)
+                    .fixedSize()
+                if hovering {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8.5 * scale, weight: .bold))
+                        .foregroundStyle(Palette.text2)
+                        .frame(width: 16, height: 14)
+                        .contentShape(Rectangle())
+                        .onTapGesture(perform: dismiss)
+                        .help("Clear without opening. It stays in its section.")
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5 * scale)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Palette.attention.opacity(hovering ? 0.16 : 0.09))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Palette.attention.opacity(0.4), lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .onTapGesture(perform: open)
+        .help("Turned up in \(item.sectionName) while that section was folded. Click to open; opening the section also clears it.")
     }
 }
 
