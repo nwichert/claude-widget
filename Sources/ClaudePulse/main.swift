@@ -39,6 +39,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
             return
         }
+        if let i = CommandLine.arguments.firstIndex(of: "--storage-test"), CommandLine.arguments.count > i + 1 {
+            try? StorageStore.debugScan().write(toFile: CommandLine.arguments[i + 1], atomically: true, encoding: .utf8)
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+            return
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--artifact-test"), CommandLine.arguments.count > i + 1 {
             try? artifacts.debugLifecycle().write(toFile: CommandLine.arguments[i + 1], atomically: true, encoding: .utf8)
             DispatchQueue.main.async { NSApp.terminate(nil) }
@@ -234,6 +239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         insights.start()
         activity.start()
         ModelFit.shared.start()
+        StorageStore.shared.start()
 
         // `ClaudePulse --snapshot out.png` renders the panel to a file and quits (for checking layout).
         if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), CommandLine.arguments.count > i + 1 {

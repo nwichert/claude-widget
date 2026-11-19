@@ -67,6 +67,7 @@ struct PanelView: View {
     var open: (SessionRow) -> Void
     /// `--demo-eye-hover` shows the eye's label in a snapshot, where nothing can hover.
     @ObservedObject private var modelFit = ModelFit.shared
+    @ObservedObject private var storage = StorageStore.shared
     @State private var hoveringEye = CommandLine.arguments.contains("--demo-eye-hover")
 
     /// Cap while the panel sizes itself, so a busy day cannot run it off the screen.
@@ -312,6 +313,7 @@ struct PanelView: View {
             if settings.showSkillIdeas { skillsSection(data) }
             if settings.showUsage { usageSection(data) }
         }
+        if settings.showUsage, !storage.items.isEmpty { storageSection }
         Color.clear.frame(height: 8)  // so the last row never sits against the footer when scrolled
     }
 
@@ -561,6 +563,67 @@ struct PanelView: View {
             }
         }
         .padding(.horizontal, 6)
+    }
+
+    // MARK: Storage
+
+    @ViewBuilder private var storageSection: some View {
+        let cleanable = storage.items.filter { $0.action != nil }.reduce(Int64(0)) { $0 + $1.bytes }
+        VStack(alignment: .leading, spacing: 1) {
+            sectionHeader("STORAGE · \(StorageStore.format(storage.total))", id: "storage") {
+                if cleanable > 0 {
+                    Text("· \(StorageStore.format(cleanable)) can go")
+                        .font(.system(size: 10 * scale))
+                }
+                Spacer()
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 8.5 * scale, weight: .semibold))
+                    .frame(width: 14, height: 12)
+                    .contentShape(Rectangle())
+                    .opacity(storage.scanning ? 0.4 : 1)
+                    .onTapGesture { storage.refresh() }
+                    .help("Measure again")
+                if let at = storage.updatedAt {
+                    TimelineView(.periodic(from: .now, by: 60)) { context in
+                        Text(context.date.timeIntervalSince(at) < 60 ? "just measured" : "as of \(Format.ago(at, now: context.date)) ago")
+                            .font(.system(size: 10 * scale))
+                    }
+                }
+            }
+            if !settings.isCollapsed("storage") {
+                let biggest = max(1, storage.items.map(\.bytes).max() ?? 1)
+                ForEach(storage.items) { item in
+                    StorageRowView(item: item, fraction: Double(item.bytes) / Double(biggest)) { confirmClean(item) }
+                }
+                if let result = storage.lastResult {
+                    Text(result)
+                        .font(.system(size: 10.5 * scale))
+                        .foregroundStyle(Palette.text3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 10)
+                        .padding(.top, 4 * scale)
+                }
+            }
+        }
+        .padding(.horizontal, 6)
+    }
+
+    /// Cleaning moves files to the Trash or removes a worktree, so it is always confirmed first.
+    private func confirmClean(_ item: StorageStore.Item) {
+        let alert = NSAlert()
+        switch item.action {
+        case .removeWorktree(_, let path)?:
+            alert.messageText = "Remove the \(path.lastPathComponent) worktree?"
+            alert.informativeText = "Frees about \(StorageStore.format(item.bytes)). Git removes the folder; its branch and commits are kept. Git will refuse if anything in it is unsaved."
+            alert.addButton(withTitle: "Remove")
+        default:
+            alert.messageText = "Move \(item.name.lowercased()) to the Trash?"
+            alert.informativeText = "About \(StorageStore.format(item.bytes)). \(item.detail). The space is freed when you empty the Trash; until then you can put it back."
+            alert.addButton(withTitle: "Move to Trash")
+        }
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn { storage.clean(item) }
     }
 
     /// Six project colours, checked for colour-blind separation and contrast on this background.
@@ -2111,6 +2174,60 @@ private struct FreshItemRowView: View {
         .onHover { hovering = $0 }
         .onTapGesture(perform: open)
         .help("Turned up in \(item.sectionName) while that section was folded. Click to open; opening the section also clears it.")
+    }
+}
+
+/// One place Claude keeps files: its size, a bar against the largest, and a clean button where safe.
+private struct StorageRowView: View {
+    @Environment(\.uiScale) private var scale
+    let item: StorageStore.Item
+    let fraction: Double
+    let clean: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        let blocked = item.needsClaudeQuit && StorageStore.claudeRunning
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(item.name)
+                    .font(.system(size: 12 * scale))
+                    .foregroundStyle(Palette.text2)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Text(StorageStore.format(item.bytes))
+                    .font(.system(size: 10.5 * scale))
+                    .foregroundStyle(Palette.text3)
+                    .monospacedDigit()
+                    .fixedSize()
+                if item.action != nil {
+                    Text(blocked ? "Quit Claude first" : item.actionLabel)
+                        .font(.system(size: 10 * scale, weight: .medium))
+                        .foregroundStyle(blocked ? Palette.text3 : Palette.text)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(RoundedRectangle(cornerRadius: 5).fill(blocked ? Color.clear : Palette.raised))
+                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Palette.border, lineWidth: 1))
+                        .contentShape(Rectangle())
+                        .onTapGesture { if !blocked { clean() } }
+                        .help(blocked ? "Claude has these files open. Quit Claude, then clean." : "Asks before doing anything")
+                        .fixedSize()
+                }
+            }
+            GeometryReader { geo in
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(item.action != nil ? Palette.text3 : Palette.border)
+                    .frame(width: max(2, geo.size.width * fraction))
+            }
+            .frame(height: 3)
+            Text(item.note.map { "\(item.detail). \($0)" } ?? item.detail)
+                .font(.system(size: 10 * scale))
+                .foregroundStyle(Palette.text3)
+                .lineLimit(hovering ? 3 : 1)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4 * scale)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(hovering ? Palette.raised : Color.clear))
+        .onHover { hovering = $0 }
     }
 }
 
