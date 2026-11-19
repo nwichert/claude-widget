@@ -464,6 +464,7 @@ final class ChatReader: ObservableObject {
         var emptyState = false
         var paneSpace: String?
         var tasks: [DuetTask] = []
+        var banners: [DuetTask] = []
         var visited = 0
         func walk(_ e: AXUIElement, _ depth: Int, _ region: String?) {
             visited += 1
@@ -476,6 +477,20 @@ final class ChatReader: ObservableObject {
                 let text = label(e)
                 for suffix in [" channel", " group"] where text.hasPrefix("Tasks in the ") && text.hasSuffix(suffix) {
                     region = String(text.dropFirst("Tasks in the ".count).dropLast(suffix.count))
+                }
+            }
+            // A question or an approval Claude is waiting on is not a task. The pane announces it
+            // in a banner instead: "Claude needs your answer in #new-product".
+            if role == "AXStaticText" || role == "AXHeading" {
+                let text = label(e)
+                if text.hasPrefix(Self.duetBanner) {
+                    let place = text.range(of: " in #").map { String(text[$0.upperBound...]) }
+                    if !banners.contains(where: { $0.title == text }) {
+                        banners.append(DuetTask(title: text, status: "Needs input", summary: nil,
+                                                url: nil, space: place))
+                    }
+                    trace?("banner: \(text)")
+                    return
                 }
             }
             switch role {
@@ -557,10 +572,22 @@ final class ChatReader: ObservableObject {
         // the status Duet prints on each task's card in the conversation and on the open task,
         // which is how a task that starts needing input is noticed while its detail is open.
         let listReadable = pane != nil && ((sawTabs && activeTab) || (current != nil && emptyState))
+        // Banner or not, a request to approve a tool sits in the conversation with its own button.
+        if banners.isEmpty, let current, find(in: page, budget: 2_500, where: { e in
+            self.attr(e, kAXRoleAttribute) as? String == "AXButton" && self.label(e) == "Allow once"
+        }) != nil {
+            banners.append(DuetTask(title: "\(Self.duetBanner) in #\(current)", status: "Needs input",
+                                    summary: nil, url: nil, space: current))
+            trace?("approval waiting in \(current)")
+        }
+        for i in banners.indices {
+            if banners[i].space == nil { banners[i].space = current }
+            banners[i].url = spaces.first { $0.name == banners[i].space }?.url
+        }
         if !listReadable {
             let cards = duetCards(page: page, pane: pane, spaces: spaces, current: current, trace: trace)
             trace?("list not readable; cards: " + cards.map { "\($0.title.prefix(30)) = \($0.status)" }.joined(separator: "; "))
-            guard !cards.isEmpty else { return }
+            guard !cards.isEmpty || !banners.isEmpty || lastTasks.contains(where: { $0.title.hasPrefix(Self.duetBanner) }) else { return }
             tasks = lastTasks
             for card in cards {
                 let status = card.status.lowercased()
@@ -595,6 +622,13 @@ final class ChatReader: ObservableObject {
                 if let space = tasks[i].space, space != current, !names.contains(space) { tasks[i].space = nil }
             }
         }
+
+        // Banners replace the ones remembered for the conversation on screen. "Everything" may not
+        // repeat a channel's banner, so there the remembered ones stay until their channel is seen.
+        if let current {
+            tasks.removeAll { $0.title.hasPrefix(Self.duetBanner) && $0.space == current }
+        }
+        for banner in banners where !tasks.contains(where: { $0.title == banner.title }) { tasks.append(banner) }
 
         // What you have already looked at stays looked at until its status changes.
         let before = Dictionary(lastTasks.map { ($0.title, $0) }, uniquingKeysWith: { first, _ in first })
@@ -899,6 +933,9 @@ final class ChatReader: ObservableObject {
             trace("tasks now: " + self.lastTasks.map { "\($0.title.prefix(30)) = \($0.status) in \($0.space ?? "main")" }.joined(separator: "; "))
         }
     }
+
+    /// How Duet's Tasks pane announces a question or approval that is not a task.
+    private static let duetBanner = "Claude needs your answer"
 
     /// The statuses Duet is known to give a task.
     private static func isDuetStatus(_ text: String) -> Bool {

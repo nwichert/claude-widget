@@ -79,6 +79,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             .merge(with: github.objectWillChange.map { _ in () })
             .merge(with: insights.objectWillChange.map { _ in () })
             .merge(with: activity.objectWillChange.map { _ in () })
+            .merge(with: ModelFit.shared.objectWillChange.map { _ in () })
             .merge(with: Settings.shared.objectWillChange.map { _ in () })
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in

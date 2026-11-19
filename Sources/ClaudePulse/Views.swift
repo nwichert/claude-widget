@@ -66,6 +66,7 @@ struct PanelView: View {
     @ObservedObject private var settings = Settings.shared
     var open: (SessionRow) -> Void
     /// `--demo-eye-hover` shows the eye's label in a snapshot, where nothing can hover.
+    @ObservedObject private var modelFit = ModelFit.shared
     @State private var hoveringEye = CommandLine.arguments.contains("--demo-eye-hover")
 
     /// Cap while the panel sizes itself, so a busy day cannot run it off the screen.
@@ -933,10 +934,31 @@ struct PanelView: View {
         if let url = URL(string: link) { NSWorkspace.shared.open(url) }
     }
 
+    /// A rough guess at what a per-model weekly limit would read if quick turns had gone to a
+    /// lighter model. Only for a limit that names a model, and only with enough turns to go on.
+    private func modelSwitchHint(_ usage: LiveUsage) -> (text: String, help: String)? {
+        guard usage.shortLabel == "7d",
+              let family = ["fable", "mythos", "opus", "sonnet"].first(where: usage.limit.lowercased().contains),
+              let share = modelFit.shares[family], share.turns >= 10 else { return nil }
+        let quick = Int((share.quick * 100).rounded())
+        guard quick >= 3 else { return nil }
+        let lighter = family == "sonnet" ? "Haiku" : "Sonnet"
+        let name = family.capitalized
+        let would = Int((Double(usage.percent) * (1 - share.quick)).rounded())
+        return ("Rough guess: quick turns were \(quick)% of \(name) use in Code. On \(lighter) you'd be near \(would)%.",
+                """
+                From this week's \(share.turns) \(name) turns in Code sessions on this Mac. A quick turn is a short \
+                reply with at most two edits and no subagents, such as a commit or a brief answer, weighted by \
+                all the tokens it used. Chats and Duet are not counted, so if most of your \(name) use is there \
+                this figure can be well off.
+                """)
+    }
+
     @ViewBuilder private var footer: some View {
         if settings.showUsage, !layout.showSettings, let usage = chats.liveUsage {
             // Claude's own figure, the same one its usage ring shows.
             TimelineView(.periodic(from: .now, by: 30)) { context in
+                VStack(alignment: .leading, spacing: 4 * scale) {
                 HStack(spacing: 10) {
                     Meter(label: usage.shortLabel, percent: usage.percent)
                     Text(usage.shortLabel == usage.limit ? "" : usage.limit)
@@ -946,7 +968,7 @@ struct PanelView: View {
                     if let resets = usage.resets {
                         Text("resets \(resets)")
                             .font(.system(size: 10 * scale))
-                            .foregroundStyle(usage.percent >= 80 ? Palette.attention : Palette.text3)
+                            .foregroundStyle(usage.percent >= 80 ? Meter.color(usage.percent) : Palette.text3)
                             .lineLimit(1)
                             .fixedSize()
                     }
@@ -956,10 +978,21 @@ struct PanelView: View {
                         .foregroundStyle(Palette.text3)
                         .fixedSize()
                 }
+                if let hint = modelSwitchHint(usage) {
+                    Text(hint.text)
+                        .font(.system(size: 10 * scale))
+                        .foregroundStyle(Palette.text3)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .help(hint.help)
+                }
+                }
             }
             .padding(.horizontal, 16)
             .padding(.top, 10 * scale)
             .padding(.bottom, 12 * scale)
+            .onAppear { modelFit.setWeek(resets: usage.resets) }
+            .onChange(of: usage.resets) { _, resets in modelFit.setWeek(resets: resets) }
             .help("Read from the usage ring in Claude Desktop. It updates while a page showing that ring is open; otherwise this is the last reading.")
         } else if settings.showUsage, !layout.showSettings, let plan = store.plan {
             TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -1162,19 +1195,27 @@ private struct Meter: View {
     let label: String
     let percent: Int
 
+    /// Green with room to spare, amber from 60%, clay from 80%, red from 90%.
+    static func color(_ percent: Int) -> Color {
+        percent >= 90 ? Color(red: 0.878, green: 0.322, blue: 0.290)
+            : percent >= 80 ? Palette.attention
+            : percent >= 60 ? LiveBadge.warning
+            : Palette.done
+    }
+
     var body: some View {
         HStack(spacing: 6) {
             Text(label).font(.system(size: 10 * scale, weight: .medium)).foregroundStyle(Palette.text3)
             ZStack(alignment: .leading) {
                 Capsule().fill(Palette.track)
                 Capsule()
-                    .fill(percent >= 80 ? Palette.attention : Palette.text2)
+                    .fill(Self.color(percent))
                     .frame(width: max(2, 44 * CGFloat(min(percent, 100)) / 100))
             }
-            .frame(width: 44, height: 3)
+            .frame(width: 44, height: 4)
             Text("\(percent)%")
-                .font(.system(size: 10 * scale))
-                .foregroundStyle(Palette.text2)
+                .font(.system(size: 10 * scale, weight: percent >= 60 ? .semibold : .regular))
+                .foregroundStyle(percent >= 60 ? Self.color(percent) : Palette.text2)
                 .monospacedDigit()
         }
         .lineLimit(1)

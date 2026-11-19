@@ -233,6 +233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         github.start()
         insights.start()
         activity.start()
+        ModelFit.shared.start()
 
         // `ClaudePulse --snapshot out.png` renders the panel to a file and quits (for checking layout).
         if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), CommandLine.arguments.count > i + 1 {
