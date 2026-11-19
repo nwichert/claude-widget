@@ -7,6 +7,12 @@ struct ChatItem: Identifiable, Equatable, Codable {
     /// Whatever Claude shows beside the title, e.g. "Includes an artifact".
     var badge: String?
     var id: String { title }
+
+    /// Claude marks the chat as waiting on you: an answer, an approval.
+    var waitingOnYou: Bool {
+        guard let badge = badge?.lowercased() else { return false }
+        return badge.contains("await") || badge.contains("approval") || badge.contains("input") || badge.contains("needs")
+    }
 }
 
 /// The usage figure Claude Desktop shows in its usage ring, e.g. "77% of 5-hour limit".
@@ -59,15 +65,15 @@ struct DuetTask: Identifiable, Equatable, Codable {
     var url: String?
     /// The channel or group it belongs to, by name. Nil for tasks in the main conversation.
     var space: String?
-    /// True once you have had it in front of you in Duet at its current status. It stops asking
-    /// for you then, until its status changes.
+    /// True once you have had it in front of you in Duet at its current status. A finished task
+    /// waiting for review stops asking for you then, until its status changes.
     var seen: Bool?
     var id: String { title }
 
-    /// Waiting on an answer you have not looked at yet.
-    var asking: Bool { needsInput && seen != true }
-    /// Waiting on an answer or a review you have not looked at yet.
-    var wantsYou: Bool { (needsInput || readyForReview) && seen != true }
+    /// Waiting on an answer. Looking at it does not settle it; only answering does.
+    var asking: Bool { needsInput }
+    /// Waiting on an answer, or on a review you have not looked at yet.
+    var wantsYou: Bool { needsInput || (readyForReview && seen != true) }
     var needsInput: Bool { status.lowercased().contains("input") }
     var readyForReview: Bool { status.lowercased().contains("review") }
     /// Claude is on it right now; Duet shows a spinner beside these.

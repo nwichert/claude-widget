@@ -320,10 +320,10 @@ struct PanelView: View {
     }
     private var otherDuetTasks: [DuetTask] { chats.duetTasks.filter { !$0.wantsYou } }
     private var urgentArtifacts: [ArtifactItem] {
-        settings.showArtifacts ? artifacts.items.filter { ($0.mentions ?? 0) > 0 || $0.newShareAt != nil } : []
+        settings.showArtifacts ? artifacts.items.filter { ($0.mentions ?? 0) > 0 || $0.newShareAt != nil || $0.hasNewComments } : []
     }
     private var otherArtifacts: [ArtifactItem] {
-        artifacts.items.filter { ($0.mentions ?? 0) == 0 && $0.newShareAt == nil }
+        artifacts.items.filter { ($0.mentions ?? 0) == 0 && $0.newShareAt == nil && !$0.hasNewComments }
     }
     private var urgentPullRequests: [PullRequest] {
         settings.showGitHub ? visiblePullRequests.filter { $0.status.needsYou } : []
@@ -347,6 +347,11 @@ struct PanelView: View {
             chats.chats.first { $0.title == waiting.key } ?? ChatItem(title: waiting.key, badge: nil)
         }
     }
+    /// Chats Claude itself marks as waiting on you, apart from the ones above.
+    private var waitingChats: [ChatItem] {
+        guard settings.showChats else { return [] }
+        return chats.chats.filter { $0.waitingOnYou && chats.waitingChats[$0.title] == nil }
+    }
 
     @ViewBuilder private var needsYouSection: some View {
         let sessions = urgentSessions
@@ -354,7 +359,8 @@ struct PanelView: View {
         let shared = urgentArtifacts
         let prs = urgentPullRequests
         let answered = answeredChats
-        let count = sessions.count + tasks.count + answered.count + shared.count + prs.count
+        let waiting = waitingChats
+        let count = sessions.count + tasks.count + answered.count + waiting.count + shared.count + prs.count
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
                 Text("NEEDS YOU")
@@ -387,6 +393,11 @@ struct PanelView: View {
                 ChatRowView(chat: chat, answered: true,
                             open: { chats.open(chat) },
                             hide: { chats.dismissWaitingChat(chat.title) })
+            }
+            ForEach(waiting) { chat in
+                ChatRowView(chat: chat,
+                            open: { chats.open(chat) },
+                            hide: { settings.hideChat(chat.title) })
             }
             ForEach(shared) { item in
                 ArtifactRowView(item: item,
@@ -668,7 +679,7 @@ struct PanelView: View {
             chats.chats.first { $0.title == title } ?? ChatItem(title: title, badge: nil)
         }
         let pinned = Set(answering.map(\.title))
-        let elsewhere = Set(answered.map(\.title))
+        let elsewhere = Set(answered.map(\.title) + waitingChats.map(\.title))
         let available = chats.chats.filter {
             !hidden.contains($0.title) && !pinned.contains($0.title) && !elsewhere.contains($0.title)
         }
@@ -2047,11 +2058,7 @@ private struct ChatRowView: View {
     @State private var hovering = false
 
     /// Claude marks the chat as waiting on you, or it holds an answer you have not been back to read.
-    private var needsYou: Bool {
-        if answered { return true }
-        guard let badge = chat.badge?.lowercased() else { return false }
-        return badge.contains("await") || badge.contains("approval") || badge.contains("input") || badge.contains("needs")
-    }
+    private var needsYou: Bool { answered || chat.waitingOnYou }
 
     var body: some View {
         HStack(spacing: 8) {
