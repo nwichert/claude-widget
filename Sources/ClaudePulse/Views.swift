@@ -792,6 +792,7 @@ struct PanelView: View {
             }
             .help("\(asking) waiting on your answer · \(waiting) done · \(working) working")
             Spacer(minLength: 4)
+            watchToggle
             LiveBadge(store: store, connections: connections) { layout.showSettings = true }
             Menu {
                 Button("New Code session") { Self.openLink("claude://code/new") }
@@ -831,6 +832,36 @@ struct PanelView: View {
         .padding(.horizontal, 16)
         .padding(.top, 12 * scale)
         .padding(.bottom, 8 * scale)
+    }
+
+    /// The eye beside "Live": filled while the screen is being watched, struck through while it
+    /// is not. Clicking it switches watching on or off.
+    @ViewBuilder private var watchToggle: some View {
+        let on = settings.observeScreen && !settings.observePaused
+        let blocked = on && !chats.trusted
+        Image(systemName: blocked ? "eye.trianglebadge.exclamationmark" : on ? "eye.fill" : "eye.slash")
+            .font(.system(size: 10.5 * scale, weight: .semibold))
+            .foregroundStyle(blocked ? LiveBadge.warning : on ? Palette.attention : Palette.text3)
+            .frame(width: 18, height: 16)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if blocked {
+                    chats.requestAccess()
+                } else if on {
+                    settings.observeScreen = false
+                } else {
+                    settings.observePaused = false
+                    settings.observeScreen = true
+                    if !chats.trusted { chats.requestAccess() }
+                }
+            }
+            .help(blocked
+                  ? "Pulse can't watch your screen until Accessibility is turned on. Click to allow it."
+                  : on
+                    ? "Pulse is watching your screen to suggest skills. Click to stop."
+                    : settings.observeScreen
+                      ? "Screen watching is paused. Click to start again."
+                      : "Pulse is not watching your screen. Click to start.")
     }
 
     private static func openLink(_ link: String) {
