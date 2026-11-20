@@ -26,6 +26,7 @@ final class Settings: ObservableObject {
         static let showDuet = "showDuet"
         static let dismissedIdeas = "dismissedIdeas"
         static let duetPeekMinutes = "duetPeekMinutes"
+        static let duetWatchMinutes = "duetWatchMinutes"
         static let observeScreen = "observeScreen"
         static let observePaused = "observePaused"
         static let observeExcludedApps = "observeExcludedApps"
@@ -43,6 +44,8 @@ final class Settings: ObservableObject {
     /// How often to send Claude's window to Duet for a look while a Duet task is running and Duet
     /// is not on screen; 0 never does. The first look after you leave Duet comes after a minute.
     @Published var duetPeekMinutes: Int { didSet { defaults.set(duetPeekMinutes, forKey: Key.duetPeekMinutes) } }
+    /// How often to check Duet when nothing is known to be running, so tasks started elsewhere are found. 0 = never.
+    @Published var duetWatchMinutes: Int { didSet { defaults.set(duetWatchMinutes, forKey: Key.duetWatchMinutes) } }
 
     /// Off unless you switch it on: record the front app, window title and visible text so a
     /// Claude session can suggest skills from work done outside Claude.
@@ -170,6 +173,7 @@ final class Settings: ObservableObject {
         dismissedIdeas = UserDefaults.standard.stringArray(forKey: Key.dismissedIdeas) ?? []
         hiddenChats = UserDefaults.standard.stringArray(forKey: Key.hiddenChats) ?? []
         duetPeekMinutes = Self.int(Key.duetPeekMinutes, default: 2)
+        duetWatchMinutes = Self.int(Key.duetWatchMinutes, default: 5)
         observeScreen = Self.bool(Key.observeScreen, default: false)
         observeExcludedApps = Self.excludedApps()
         observeRetentionDays = Self.int(Key.observeRetentionDays, default: 7)

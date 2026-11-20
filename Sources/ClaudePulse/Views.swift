@@ -2506,6 +2506,11 @@ private struct SettingsView: View {
                     note(settings.duetPeekMinutes == 0
                          ? "Pulse only sees Duet while it's on screen, so a task that needs you can sit unnoticed while you're somewhere else in Claude."
                          : "Pulse only sees Duet while it's on screen. A minute after you leave Duet, and then this often while a task is running, Claude's window flips to Duet for a few seconds and back to where you were, so you hear about it when a task needs you. It waits for a pause if you're using Claude.")
+                    choice("Check for new tasks", $settings.duetWatchMinutes,
+                           [(0, "Off"), (5, "5m"), (10, "10m"), (15, "15m")])
+                    note(settings.duetWatchMinutes == 0
+                         ? "Tasks started from your phone, on a schedule, or by Claude asking later are only found when you open Duet yourself."
+                         : "Even with nothing running, Pulse looks in this often, so tasks started from your phone, on a schedule, or by Claude asking later still reach Needs You. It waits until you've left Claude alone for 45 seconds.")
                 }
             }
             screenActivity

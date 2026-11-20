@@ -694,7 +694,8 @@ final class ChatReader: ObservableObject {
         }
         let now = Date()
         lastDuetReadAt = now
-        if !peeking { checkedSinceVisit = false }
+        // A read while a look-in has the window on Duet is that look, not a visit of yours.
+        if !peeking, now.timeIntervalSince(lastPeekAt) > 20 { checkedSinceVisit = false }
         if let data = try? JSONEncoder().encode(tasks) {
             UserDefaults.standard.set(data, forKey: duetKey)
             UserDefaults.standard.set(now.timeIntervalSince1970, forKey: duetSeenKey)
@@ -805,17 +806,20 @@ final class ChatReader: ObservableObject {
     /// are elsewhere in Claude would go unnoticed. This sends Claude's window to Duet for a moment,
     /// reads the list, and puts the window back.
     ///
-    /// It looks once about a minute after Duet leaves the screen with a task running or waiting on
-    /// you: answering a question or starting a task changes a status a moment after you walk away,
-    /// and that is the reading everything later is compared with. After that it looks every few
-    /// minutes for as long as a task is running.
+    /// It looks once about a minute after Duet leaves the screen: answering a question or starting
+    /// a task changes a status a moment after you walk away, and that is the reading everything
+    /// later is compared with. After that it looks every few minutes while a task is running, and
+    /// every so often even when none is, for tasks that start or ask for you elsewhere.
     ///
     /// It never does so while you are using Claude: the window would change under your hands and
     /// your typing would land in Duet.
     private func peekAtDuetIfDue(_ root: AXUIElement, trace: ((String) -> Void)? = nil, force: Bool = false) {
         let minutes = Settings.int(Settings.Key.duetPeekMinutes, default: 2)
-        guard force || minutes > 0 else { return }
+        let watchMinutes = Settings.int(Settings.Key.duetWatchMinutes, default: 5)
+        guard force || minutes > 0 || watchMinutes > 0 else { return }
         let interval = TimeInterval(max(1, minutes) * 60)
+        // Set when this look is only to find out whether anything new has turned up.
+        var discovering = false
         let now = Date()
         func note(_ text: String) {
             trace?(text)
@@ -828,12 +832,18 @@ final class ChatReader: ObservableObject {
             guard lastDuetReadAt != .distantPast, now.timeIntervalSince(lastPeekAt) >= 60 else { return }
             let sinceRead = now.timeIntervalSince(lastDuetReadAt)
             let working = lastTasks.contains(where: \.isWorking)
+            // Once after every visit to Duet, whatever the list said then: a task you just started
+            // can sit in "Up next" for a moment, so the Active list read while you were there can
+            // be empty even though it is about to run and ask for you.
             let followUp = !checkedSinceVisit && sinceRead >= 60
-                && lastTasks.contains(where: { $0.isWorking || $0.needsInput })
-            guard followUp || (working && sinceRead >= interval) else {
-                if !working, checkedSinceVisit || lastTasks.isEmpty { note("nothing running in Duet; not looking") }
-                return
-            }
+            // Tasks also start and ask for you without Pulse having seen them run: from your phone,
+            // on a schedule, or when Claude asks something later in a channel. Only a look finds
+            // those, so look every so often even when nothing is known to be running.
+            let sinceLook = min(sinceRead, now.timeIntervalSince(lastPeekAt))
+            let discover = watchMinutes > 0 && sinceLook >= TimeInterval(watchMinutes * 60)
+            let running = minutes > 0 && (followUp || (working && sinceRead >= interval))
+            guard running || discover else { return }
+            discovering = !running
         }
         guard let scan = scanSidebar(root) else { note("can't tell where Claude's window is; leaving it alone"); return }
         let fromChat = scan.chatTab
@@ -842,10 +852,13 @@ final class ChatReader: ObservableObject {
         }
         if claudeIsFront, let anyInput = CGEventType(rawValue: ~0) {
             let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyInput)
-            guard idle >= 10 else { note("due, but you are using Claude; waiting for a pause"); return }
+            // A routine check waits longer than a follow-up, so it never flips the window while
+            // you are reading something in Claude.
+            let pause: Double = discovering ? 45 : 10
+            guard idle >= pause else { note("due, but you are using Claude; waiting for a pause"); return }
         }
         lastPeekAt = now
-        note("looking in on Duet from \(fromChat ? "the Claude tab" : "a Code session")")
+        note((discovering ? "routine check: " : "") + "looking in on Duet from \(fromChat ? "the Claude tab" : "a Code session")")
 
         navigateToDuet(root, trace: trace)
         showDuetSpace(nil, root: root, trace: trace)
