@@ -123,6 +123,11 @@ final class ChatReader: ObservableObject {
     /// When Duet's tasks were last read, and when the window was last sent to look. Reader queue only.
     private var lastDuetReadAt = Date.distantPast
     private var lastPeekAt = Date.distantPast
+    /// When a list covering every channel ("Everything", or a look-in) was last read. Reading one
+    /// channel's page says nothing about the others, so only this resets the routine check.
+    private var lastFullReadAt = Date.distantPast
+    /// The Duet channel on screen at the last read of yours (nil for "Everything" or not on Duet).
+    private var duetSpaceOnScreen: String?
     /// False from the moment Duet is seen on screen until a look-in has checked on it since.
     private var checkedSinceVisit = false
     private var lastPeekNote = ""
@@ -712,6 +717,8 @@ final class ChatReader: ObservableObject {
         }
         let now = Date()
         lastDuetReadAt = now
+        if listReadable && current == nil { lastFullReadAt = now }
+        if !peeking { duetSpaceOnScreen = current }
         // A read while a look-in has the window on Duet is that look, not a visit of yours.
         if !peeking, now.timeIntervalSince(lastPeekAt) > 20 { checkedSinceVisit = false }
         if let data = try? JSONEncoder().encode(tasks) {
@@ -845,7 +852,10 @@ final class ChatReader: ObservableObject {
             lastPeekNote = text
             Self.logPeek(text)
         }
-        guard duetPage(root) == nil else { return }
+        // Already on Duet: only a routine check is worth making, and only when the page shows a
+        // single channel, which hides what the others are doing.
+        let onDuet = duetPage(root) != nil
+        if onDuet && (force || duetSpaceOnScreen == nil) { return }
         if !force {
             guard lastDuetReadAt != .distantPast, now.timeIntervalSince(lastPeekAt) >= 60 else { return }
             let sinceRead = now.timeIntervalSince(lastDuetReadAt)
@@ -857,9 +867,9 @@ final class ChatReader: ObservableObject {
             // Tasks also start and ask for you without Pulse having seen them run: from your phone,
             // on a schedule, or when Claude asks something later in a channel. Only a look finds
             // those, so look every so often even when nothing is known to be running.
-            let sinceLook = min(sinceRead, now.timeIntervalSince(lastPeekAt))
+            let sinceLook = min(now.timeIntervalSince(lastFullReadAt), now.timeIntervalSince(lastPeekAt))
             let discover = watchMinutes > 0 && sinceLook >= TimeInterval(watchMinutes * 60)
-            let running = minutes > 0 && (followUp || (working && sinceRead >= interval))
+            let running = !onDuet && minutes > 0 && (followUp || (working && sinceRead >= interval))
             guard running || discover else { return }
             discovering = !running
         }
@@ -876,10 +886,13 @@ final class ChatReader: ObservableObject {
             guard idle >= pause else { note("due, but you are using Claude; waiting for a pause"); return }
         }
         lastPeekAt = now
-        note((discovering ? "routine check: " : "") + "looking in on Duet from \(fromChat ? "the Claude tab" : "a Code session")")
+        let channel = onDuet ? duetSpaceOnScreen : nil
+        note((discovering ? "routine check: " : "") + "looking in on Duet from "
+             + (channel != nil ? "a Duet channel" : fromChat ? "the Claude tab" : "a Code session"))
 
-        navigateToDuet(root, trace: trace)
+        if channel == nil { navigateToDuet(root, trace: trace) }
         showDuetSpace(nil, root: root, trace: trace)
+        var revealedPane = false
         if let page = duetPage(root) {
             // The page fills in over a second or two. Wait for the Tasks list and its tabs, bringing
             // the pane back if it is hidden and stepping out of a task whose detail was left open.
@@ -895,6 +908,7 @@ final class ChatReader: ObservableObject {
                         self.attr(e, kAXRoleAttribute) as? String == "AXButton" && self.label(e).hasPrefix("Tasks")
                     }) {
                         revealed = AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+                        revealedPane = revealed
                     }
                     continue
                 }
@@ -924,7 +938,17 @@ final class ChatReader: ObservableObject {
             note("Duet did not open")
         }
 
-        if fromChat {
+        if let channel {
+            // Back to the channel you were on, with its Tasks pane as you left it.
+            showDuetSpace(channel, root: root, trace: trace)
+            if revealedPane, let page = duetPage(root), let button = find(in: page, budget: 400, where: { e in
+                self.attr(e, kAXRoleAttribute) as? String == "AXButton" && self.label(e).hasPrefix("Tasks")
+            }) {
+                Thread.sleep(forTimeInterval: 0.5)
+                AXUIElementPerformAction(button, kAXPressAction as CFString)
+            }
+            trace?("returned to #\(channel)")
+        } else if fromChat {
             // Duet's own way back goes to whatever the Claude tab was showing.
             let back = duetPage(root).flatMap { page in
                 find(in: page, budget: 200, where: { e in
