@@ -172,6 +172,9 @@ final class ChatReader: ObservableObject {
         var chatTab: Bool
         /// Row title -> the status text beside it, e.g. "Running" or "Awaiting input".
         var badges: [String: String]
+        /// The Code session the window has open ("local_…"), read from the page address. Nil when
+        /// the window shows something else or the address could not be read.
+        var openSession: String? = nil
     }
 
     private let sidebarLock = NSLock()
@@ -275,8 +278,9 @@ final class ChatReader: ObservableObject {
 
         var badges: [String: String] = [:]
         for row in scan.rows { if let badge = row.badge { badges[row.title] = badge } }
+        let open = openCodeSession(root)
         sidebarLock.lock()
-        lastSidebar = Sidebar(at: Date(), chatTab: scan.chatTab, badges: badges)
+        lastSidebar = Sidebar(at: Date(), chatTab: scan.chatTab, badges: badges, openSession: open)
         sidebarLock.unlock()
 
         guard scan.chatTab, Settings.bool(Settings.Key.showChats, default: true) else { return }
@@ -292,6 +296,20 @@ final class ChatReader: ObservableObject {
             if self.chats != items { self.chats = items }
             self.seenAt = now
         }
+    }
+
+    /// The Code session on screen: Claude's page address ends in its id, ".../epitaxy/local_…".
+    private func openCodeSession(_ root: AXUIElement) -> String? {
+        for window in (attr(root, kAXWindowsAttribute) as? [AXUIElement]) ?? [] {
+            if let page = find(in: window, budget: 60, maxDepth: 12, where: { e in
+                guard self.attr(e, kAXRoleAttribute) as? String == "AXWebArea",
+                      let url = self.attr(e, kAXURLAttribute) as? URL else { return false }
+                return url.host == "claude.ai" && url.lastPathComponent.hasPrefix("local_")
+            }), let url = attr(page, kAXURLAttribute) as? URL {
+                return url.lastPathComponent
+            }
+        }
+        return nil
     }
 
     // MARK: - Answers you walked away from

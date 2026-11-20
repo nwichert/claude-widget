@@ -253,6 +253,9 @@ final class SessionStore: ObservableObject {
         // On the Claude (chat) tab no Code session is on screen, whatever was selected last.
         let side = sidebar?().flatMap { now.timeIntervalSince($0.at) < 15 ? $0 : nil }
         if side?.chatTab == true { onScreen = nil }
+        // Better than any timestamp: the session the window's page address names. "Last focused"
+        // only moves when you switch, so it can point at a session you have since left.
+        if claudeIsFront, let side, !side.chatTab { onScreen = side.openSession }
 
         var liveByHost: [String: LiveRecord] = [:]
         var liveByCli: [String: LiveRecord] = [:]
