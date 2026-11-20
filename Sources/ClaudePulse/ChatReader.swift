@@ -1673,7 +1673,9 @@ final class ChatReader: ObservableObject {
             let role = attr(e, kAXRoleAttribute) as? String ?? ""
             switch role {
             case "AXRadioButton":
-                if label(e) == "Claude" {
+                // "Claude", or "Claude, awaiting your input" while a chat is waiting on you.
+                let text = label(e)
+                if text == "Claude" || text.hasPrefix("Claude, ") {
                     scan.chatTabButton = e
                     scan.chatTab = (attr(e, kAXValueAttribute) as? NSNumber)?.intValue == 1
                 }
