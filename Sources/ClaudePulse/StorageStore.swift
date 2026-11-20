@@ -30,6 +30,8 @@ final class StorageStore: ObservableObject {
         var needsClaudeQuit = false
         /// Why it cannot be cleaned, when that is worth saying.
         var note: String?
+        /// The folder clicking the row shows in Finder.
+        var location: URL?
     }
 
     @Published private(set) var items: [Item] = []
@@ -114,7 +116,7 @@ final class StorageStore: ObservableObject {
         // The Cowork VM: the bulk of it, and Claude needs it.
         let vm = support.appendingPathComponent("vm_bundles")
         out.append(Item(id: "vm", name: "Cowork VM", detail: "The Linux machine Cowork tasks run in",
-                        bytes: size(of: vm), note: "Claude needs this to run Cowork; it would download it again."))
+                        bytes: size(of: vm), note: "Claude needs this to run Cowork; it would download it again.", location: vm))
 
         // Claude Code versions other than the one `claude` runs.
         let versions = home.appendingPathComponent(".local/share/claude/versions")
@@ -127,7 +129,7 @@ final class StorageStore: ObservableObject {
         out.append(Item(id: "versions", name: "Old Claude Code versions",
                         detail: old.isEmpty ? "Only the version in use (\(current ?? "unknown"))"
                             : "\(old.map(\.lastPathComponent).joined(separator: ", ")); in use: \(current ?? "?")",
-                        bytes: oldBytes, action: old.isEmpty ? nil : .trash(old)))
+                        bytes: oldBytes, action: old.isEmpty ? nil : .trash(old), location: versions))
 
         // Caches the desktop app and the CLI rebuild on their own.
         let appCaches = ["Cache", "Code Cache", "GPUCache", "GraphiteDawnCache", "DawnGraphiteCache", "DawnWebGPUCache"]
@@ -137,11 +139,11 @@ final class StorageStore: ObservableObject {
         let appBytes = appCaches.reduce(Int64(0)) { $0 + size(of: $1) }
         out.append(Item(id: "appcache", name: "Claude app caches", detail: "Web and GPU caches; rebuilt as needed",
                         bytes: appBytes, action: appBytes > 0 ? .trash(appCaches) : nil,
-                        needsClaudeQuit: true))
+                        needsClaudeQuit: true, location: support))
         if fm.fileExists(atPath: cliCache.path) {
             let bytes = size(of: cliCache)
             out.append(Item(id: "clicache", name: "Claude Code cache", detail: "CLI cache and MCP logs",
-                            bytes: bytes, action: bytes > 0 ? .trash([cliCache]) : nil))
+                            bytes: bytes, action: bytes > 0 ? .trash([cliCache]) : nil, location: cliCache))
         }
 
         // Logs more than a week old.
@@ -151,7 +153,7 @@ final class StorageStore: ObservableObject {
             .filter { ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date()) < weekAgo }
         let logBytes = oldLogs.reduce(Int64(0)) { $0 + size(of: $1) }
         out.append(Item(id: "logs", name: "Old logs", detail: "Claude app logs over a week old",
-                        bytes: logBytes, action: oldLogs.isEmpty ? nil : .trash(oldLogs)))
+                        bytes: logBytes, action: oldLogs.isEmpty ? nil : .trash(oldLogs), location: logs))
 
         // Worktrees Claude Code made, one row each.
         out += worktrees(home: home)
@@ -159,11 +161,12 @@ final class StorageStore: ObservableObject {
         // Kept for reference, never cleaned here.
         let projects = home.appendingPathComponent(".claude/projects")
         out.append(Item(id: "transcripts", name: "Session transcripts", detail: "Your Code session history",
-                        bytes: size(of: projects), note: "Resume and Pulse's usage figures read these."))
+                        bytes: size(of: projects), note: "Resume and Pulse's usage figures read these.", location: projects))
         let extras = [".claude/plugins", ".claude/skills"].map { home.appendingPathComponent($0) }
         out.append(Item(id: "plugins", name: "Plugins and skills", detail: "Installed in ~/.claude",
                         bytes: extras.reduce(Int64(0)) { $0 + size(of: $1) },
-                        note: "Remove ones you no longer use from Claude itself."))
+                        note: "Remove ones you no longer use from Claude itself.",
+                        location: home.appendingPathComponent(".claude/plugins")))
 
         let total = size(of: support) + size(of: home.appendingPathComponent(".claude"))
             + size(of: home.appendingPathComponent(".local/share/claude")) + size(of: cliCache)
@@ -200,7 +203,7 @@ final class StorageStore: ObservableObject {
                                 bytes: size(of: url),
                                 action: dirty ? nil : .removeWorktree(repo: repoURL, path: url),
                                 actionLabel: "Remove",
-                                note: dirty ? "Commit or discard its changes first." : nil))
+                                note: dirty ? "Commit or discard its changes first." : nil, location: url))
             }
         }
         return out.sorted { $0.bytes > $1.bytes }

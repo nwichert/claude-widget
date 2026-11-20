@@ -241,27 +241,43 @@ final class ChatReader: ObservableObject {
         _ = AXIsProcessTrustedWithOptions(options)
     }
 
-    /// Brings Claude forward and opens the chat, switching to the Claude tab first if needed.
-    func open(_ chat: ChatItem) {
+    /// Brings Claude forward and opens the chat: out of Duet if the window is there, onto the Claude
+    /// tab, then its sidebar row.
+    func open(_ chat: ChatItem, trace: ((String) -> Void)? = nil) {
         if let app = NSRunningApplication.runningApplications(withBundleIdentifier: claudeBundleID).first {
             app.activate()
         }
         queue.async { [weak self] in
-            guard let self, let root = self.claudeRoot(), var scan = self.scanSidebar(root) else { return }
-            if !scan.chatTab, let tab = scan.chatTabButton {
+            guard let self, let root = self.claudeRoot() else { trace?("Claude not reachable"); return }
+            // Duet has a sidebar of its own, with no chats in it.
+            if let page = self.duetPage(root), let back = self.find(in: page, budget: 300, where: { e in
+                self.attr(e, kAXRoleAttribute) as? String == "AXButton" && self.label(e) == "Back to Claude"
+            }) {
+                AXUIElementPerformAction(back, kAXPressAction as CFString)
+                trace?("left Duet")
+                for _ in 0..<10 where self.duetPage(root) != nil { Thread.sleep(forTimeInterval: 0.3) }
+            }
+            var scan = self.scanSidebar(root)
+            for _ in 0..<6 where scan == nil {
+                Thread.sleep(forTimeInterval: 0.3)
+                scan = self.scanSidebar(root)
+            }
+            guard var found = scan else { trace?("sidebar not found"); return }
+            if !found.chatTab, let tab = found.chatTabButton {
                 AXUIElementPerformAction(tab, kAXPressAction as CFString)
-                // Give the sidebar a moment to swap lists.
-                for _ in 0..<8 {
-                    Thread.sleep(forTimeInterval: 0.3)
-                    if let again = self.scanSidebar(root), again.chatTab, again.buttons[chat.title] != nil {
-                        scan = again
-                        break
-                    }
-                }
+                trace?("pressed the Claude tab")
             }
-            if let button = scan.buttons[chat.title] {
-                AXUIElementPerformAction(button, kAXPressAction as CFString)
+            // Give the sidebar a moment to swap lists.
+            for _ in 0..<10 where !(found.chatTab && found.buttons[chat.title] != nil) {
+                Thread.sleep(forTimeInterval: 0.3)
+                if let again = self.scanSidebar(root) { found = again }
             }
+            if let button = found.buttons[chat.title] {
+                let ok = AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+                trace?("pressed the sidebar row: \(ok)")
+                return
+            }
+            trace?("not in the sidebar")
         }
     }
 

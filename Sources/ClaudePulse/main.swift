@@ -154,6 +154,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
             return
         }
+        // Diagnostic: `--open-chat-test "<title>" out.txt` opens that chat in Claude and logs each step.
+        if let i = CommandLine.arguments.firstIndex(of: "--open-chat-test"), CommandLine.arguments.count > i + 2 {
+            let title = CommandLine.arguments[i + 1], path = CommandLine.arguments[i + 2]
+            var log: [String] = []
+            chats.open(ChatItem(title: title, badge: nil)) { line in
+                log.append(line)
+                try? log.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 15) { NSApp.terminate(nil) }
+            return
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--chat-debug"), CommandLine.arguments.count > i + 1 {
             let path = CommandLine.arguments[i + 1]
             DispatchQueue.global().async { [chats] in

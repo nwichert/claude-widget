@@ -1179,9 +1179,11 @@ struct PanelView: View {
             .padding(.horizontal, 16)
             .padding(.top, 10 * scale)
             .padding(.bottom, 12 * scale)
+            .contentShape(Rectangle())
+            .onTapGesture { Self.openLink("https://claude.ai/settings/usage") }
             .onAppear { modelFit.setWeek(resets: usage.resets) }
             .onChange(of: usage.resets) { _, resets in modelFit.setWeek(resets: resets) }
-            .help("Read from the usage ring in Claude Desktop. It updates while a page showing that ring is open; otherwise this is the last reading.")
+            .help("Read from the usage ring in Claude Desktop. It updates while a page showing that ring is open; otherwise this is the last reading. Click for Claude's usage page.")
         } else if settings.showUsage, !layout.showSettings, let plan = store.plan {
             TimelineView(.periodic(from: .now, by: 60)) { context in
                 HStack(spacing: 12) {
@@ -1196,7 +1198,9 @@ struct PanelView: View {
             .padding(.horizontal, 16)
             .padding(.top, 10 * scale)
             .padding(.bottom, 12 * scale)
-            .help("Plan usage as last sampled by Claude Desktop. It is not live.")
+            .contentShape(Rectangle())
+            .onTapGesture { Self.openLink("https://claude.ai/settings/usage") }
+            .help("Plan usage as last sampled by Claude Desktop. It is not live. Click for Claude's usage page.")
         } else {
             Color.clear.frame(height: 8)
         }
@@ -2234,7 +2238,15 @@ private struct StorageRowView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 4 * scale)
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(hovering ? Palette.raised : Color.clear))
+        .contentShape(Rectangle())
         .onHover { hovering = $0 }
+        .onTapGesture {
+            // Show it in Finder: the folder itself, or the first thing cleaning would touch.
+            if let url = item.location, FileManager.default.fileExists(atPath: url.path) {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
+        }
+        .help(item.location.map { "Show \(($0.path as NSString).abbreviatingWithTildeInPath) in Finder" } ?? "")
     }
 }
 
