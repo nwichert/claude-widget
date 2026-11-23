@@ -123,6 +123,9 @@ final class ChatReader: ObservableObject {
     /// When Duet's tasks were last read, and when the window was last sent to look. Reader queue only.
     private var lastDuetReadAt = Date.distantPast
     private var lastPeekAt = Date.distantPast
+    /// When the chat list was last read, and when Pulse last flipped to the chat tab to read it.
+    private var lastChatsReadAt = Date.distantPast
+    private var lastChatsLookAt = Date.distantPast
     /// When a list covering every channel ("Everything", or a look-in) was last read. Reading one
     /// channel's page says nothing about the others, so only this resets the routine check.
     private var lastFullReadAt = Date.distantPast
@@ -295,7 +298,8 @@ final class ChatReader: ObservableObject {
         // The ring sits deep in the page, so finding it is the costliest read here: every third pass.
         tickCount += 1
         if tickCount % 3 == 1, Settings.bool(Settings.Key.showUsage, default: true) { readUsage(root) }
-        guard let scan = scanSidebar(root) else { return }
+        guard var scan = scanSidebar(root) else { return }
+        if !scan.chatTab, let looked = lookInOnChatsIfDue(root, scan) { scan = looked }
 
         var badges: [String: String] = [:]
         for row in scan.rows { if let badge = row.badge { badges[row.title] = badge } }
@@ -309,6 +313,7 @@ final class ChatReader: ObservableObject {
         let items = Array(scan.recents.prefix(limit))
         guard !items.isEmpty else { return }
         let now = Date()
+        lastChatsReadAt = now
         if let data = try? JSONEncoder().encode(items) {
             UserDefaults.standard.set(data, forKey: cacheKey)
             UserDefaults.standard.set(now.timeIntervalSince1970, forKey: seenKey)
@@ -317,6 +322,34 @@ final class ChatReader: ObservableObject {
             if self.chats != items { self.chats = items }
             self.seenAt = now
         }
+    }
+
+    /// Chats can only be read off the sidebar while Claude's chat tab is open. When you are in a Code
+    /// session and have left Claude alone for a moment, this presses the Claude tab, reads the list,
+    /// and goes back to the session you were in. Returns the reading, or nil when it did not look.
+    private func lookInOnChatsIfDue(_ root: AXUIElement, _ scan: Scan) -> Scan? {
+        guard Settings.bool(Settings.Key.showChats, default: true),
+              let every = Settings.lookInterval(Settings.int(Settings.Key.chatsLookMinutes, default: 0)),
+              let tab = scan.chatTabButton, duetPage(root) == nil else { return nil }
+        let now = Date()
+        guard now.timeIntervalSince(lastChatsReadAt) >= every, now.timeIntervalSince(lastChatsLookAt) >= every else { return nil }
+        let claudeIsFront = DispatchQueue.main.sync {
+            NSWorkspace.shared.frontmostApplication?.bundleIdentifier == claudeBundleID
+        }
+        // Never while you are typing or reading in Claude: the window would change under you.
+        if claudeIsFront, let anyInput = CGEventType(rawValue: ~0),
+           CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyInput) < 10 { return nil }
+        lastChatsLookAt = now
+        AXUIElementPerformAction(tab, kAXPressAction as CFString)
+        var reading: Scan?
+        for _ in 0..<10 {
+            Thread.sleep(forTimeInterval: 0.3)
+            if let again = scanSidebar(root), again.chatTab, !again.recents.isEmpty { reading = again; break }
+        }
+        if let url = URL(string: "claude://code/continue?session=last") {
+            DispatchQueue.main.async { NSWorkspace.shared.open(url) }
+        }
+        return reading
     }
 
     /// The Code session on screen: Claude's page address ends in its id, ".../epitaxy/local_…".
@@ -855,10 +888,13 @@ final class ChatReader: ObservableObject {
     /// It never does so while you are using Claude: the window would change under your hands and
     /// your typing would land in Duet.
     private func peekAtDuetIfDue(_ root: AXUIElement, trace: ((String) -> Void)? = nil, force: Bool = false) {
-        let minutes = Settings.int(Settings.Key.duetPeekMinutes, default: 2)
-        let watchMinutes = Settings.int(Settings.Key.duetWatchMinutes, default: 5)
-        guard force || minutes > 0 || watchMinutes > 0 else { return }
-        let interval = TimeInterval(max(1, minutes) * 60)
+        // 0 is off, a negative value is Live, anything else is minutes.
+        let peekEvery = Settings.lookInterval(Settings.int(Settings.Key.duetPeekMinutes, default: 2))
+        let watchEvery = Settings.lookInterval(Settings.int(Settings.Key.duetWatchMinutes, default: 5))
+        guard force || peekEvery != nil || watchEvery != nil else { return }
+        let interval = peekEvery ?? 60
+        // Never look more often than the fastest setting asks, and at most once a minute unless one is Live.
+        let floor = min(60, peekEvery ?? 60, watchEvery ?? 60)
         // Set when this look is only to find out whether anything new has turned up.
         var discovering = false
         let now = Date()
@@ -873,19 +909,19 @@ final class ChatReader: ObservableObject {
         let onDuet = duetPage(root) != nil
         if onDuet && (force || duetSpaceOnScreen == nil) { return }
         if !force {
-            guard lastDuetReadAt != .distantPast, now.timeIntervalSince(lastPeekAt) >= 60 else { return }
+            guard lastDuetReadAt != .distantPast, now.timeIntervalSince(lastPeekAt) >= floor else { return }
             let sinceRead = now.timeIntervalSince(lastDuetReadAt)
             let working = lastTasks.contains(where: \.isWorking)
             // Once after every visit to Duet, whatever the list said then: a task you just started
             // can sit in "Up next" for a moment, so the Active list read while you were there can
             // be empty even though it is about to run and ask for you.
-            let followUp = !checkedSinceVisit && sinceRead >= 60
+            let followUp = !checkedSinceVisit && sinceRead >= floor
             // Tasks also start and ask for you without Pulse having seen them run: from your phone,
             // on a schedule, or when Claude asks something later in a channel. Only a look finds
             // those, so look every so often even when nothing is known to be running.
             let sinceLook = min(now.timeIntervalSince(lastFullReadAt), now.timeIntervalSince(lastPeekAt))
-            let discover = watchMinutes > 0 && sinceLook >= TimeInterval(watchMinutes * 60)
-            let running = !onDuet && minutes > 0 && (followUp || (working && sinceRead >= interval))
+            let discover = watchEvery.map { sinceLook >= $0 } ?? false
+            let running = !onDuet && peekEvery != nil && (followUp || (working && sinceRead >= interval))
             guard running || discover else { return }
             discovering = !running
         }

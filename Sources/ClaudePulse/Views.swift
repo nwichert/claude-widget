@@ -306,7 +306,8 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 0) {
             huddleSlot(after: "top")
             slot("needs") { needsYouSection }
-            slot("code") { if settings.showCode { sessionList(limit: limit) } }
+            // Agent Huddle takes the Code section's place while it sits in the panel.
+            slot("code") { if settings.showCode, !huddleInPanel { sessionList(limit: limit) } }
             slot("github") { if settings.showGitHub, !otherPullRequests.isEmpty { pullRequestSection } }
             slot("duet") {
                 if settings.showDuet, chats.trusted, chats.duetSeenAt != nil, !chats.duetSpaces.isEmpty || !(otherDuetTasks.isEmpty && !urgentDuetTasks.isEmpty) {
@@ -325,6 +326,8 @@ struct PanelView: View {
             dock.slots = Self.slotOrder.compactMap { id in frames[id].map { (id, $0) } }
         }
     }
+
+    private var huddleInPanel: Bool { settings.showHuddle && !dock.hidden && dock.anchor != nil }
 
     private static let slotOrder = ["huddle", "needs", "code", "github", "duet", "artifacts", "chats", "skills", "usage", "storage"]
 
@@ -2551,6 +2554,9 @@ private struct SettingsView: View {
                 toggle("Code sessions", $settings.showCode)
                 if settings.showCode {
                     sub {
+                        if settings.showHuddle {
+                            note("While Agent Huddle sits in the panel, it takes this section's place. Drag the huddle out to bring the Code list back.")
+                        }
                         toggle("Git branch and changes", $settings.showGit)
                         toggle("Context meter", $settings.showContext)
                         choice("Keep idle sessions for", $settings.recentHours,
@@ -2573,19 +2579,34 @@ private struct SettingsView: View {
                 if settings.showDuet {
                     sub {
                         choice("Look in on running tasks", $settings.duetPeekMinutes,
-                               [(0, "Off"), (1, "1m"), (2, "2m"), (5, "5m")])
+                               [(0, "Off"), (Settings.live, "Live"), (1, "1m"), (2, "2m"), (5, "5m")])
                         note(settings.duetPeekMinutes == 0
                              ? "Pulse only sees Duet while it's on screen, so a task that needs you can sit unnoticed while you're somewhere else in Claude."
+                             : settings.duetPeekMinutes == Settings.live
+                             ? "Pulse only sees Duet while it's on screen, so Live looks in every 15 seconds while a task is running: Claude's window flips to Duet for a few seconds and back. It waits for a 10-second pause if you're using Claude, so expect the window to flick often."
                              : "Pulse only sees Duet while it's on screen. A minute after you leave Duet, and then this often while a task is running, Claude's window flips to Duet for a few seconds and back to where you were. It waits for a pause if you're using Claude.")
                         choice("Check for new tasks", $settings.duetWatchMinutes,
-                               [(0, "Off"), (1, "1m"), (2, "2m"), (5, "5m"), (10, "10m")])
+                               [(0, "Off"), (Settings.live, "Live"), (1, "1m"), (2, "2m"), (5, "5m"), (10, "10m")])
                         note(settings.duetWatchMinutes == 0
                              ? "Tasks started from your phone, on a schedule, or by Claude asking later are only found when you open Duet yourself."
+                             : settings.duetWatchMinutes == Settings.live
+                             ? "Even with nothing running, Live looks in every 15 seconds once you've left Claude alone for 45 seconds, so new tasks reach Needs You soon after you step away. Claude's window flicks to Duet for about 2 seconds each time."
                              : "Even with nothing running, Pulse looks in this often, so tasks started from your phone, on a schedule, or by Claude asking later still reach Needs You. It waits until you've left Claude alone for 45 seconds, then shows Duet for about 2 seconds." + (settings.duetWatchMinutes <= 2 ? " At this pace you may see Claude's window flick to Duet now and then." : ""))
                     }
                 }
                 toggle("Artifacts", $settings.showArtifacts)
                 toggle("Chats", $settings.showChats)
+                if settings.showChats {
+                    sub {
+                        choice("Read chats", $settings.chatsLookMinutes,
+                               [(0, "Off"), (Settings.live, "Live"), (1, "1m"), (5, "5m"), (10, "10m")])
+                        note(settings.chatsLookMinutes == 0
+                             ? "Pulse reads your chats only while Claude's chat tab is on screen."
+                             : "Pulse reads your chats whenever Claude's chat tab is on screen. While you're in a Code session, it also flips to the chat tab "
+                               + (settings.chatsLookMinutes == Settings.live ? "every 15 seconds" : "this often")
+                               + " to read the list, then goes back to your session. It waits for a 10-second pause if you're using Claude.")
+                    }
+                }
                 if settings.showChats && !settings.hiddenChats.isEmpty {
                     sub {
                         sublabel("Hidden")

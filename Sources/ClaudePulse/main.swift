@@ -304,6 +304,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .receive(on: DispatchQueue.main)
             .sink { [weak self] on in
                 guard let self else { return }
+                // A newly switched-on huddle takes the Code section's place in the panel.
+                if on, HuddleDock.shared.anchor == nil { HuddleDock.shared.anchor = "needs" }
                 if on { self.huddlePanel.show() } else { self.huddlePanel.refresh() }
             }
             .store(in: &cancellables)

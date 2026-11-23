@@ -27,6 +27,7 @@ final class Settings: ObservableObject {
         static let dismissedIdeas = "dismissedIdeas"
         static let duetPeekMinutes = "duetPeekMinutes"
         static let duetWatchMinutes = "duetWatchMinutes"
+        static let chatsLookMinutes = "chatsLookMinutes"
         static let observeScreen = "observeScreen"
         static let observePaused = "observePaused"
         static let observeExcludedApps = "observeExcludedApps"
@@ -46,6 +47,9 @@ final class Settings: ObservableObject {
     @Published var duetPeekMinutes: Int { didSet { defaults.set(duetPeekMinutes, forKey: Key.duetPeekMinutes) } }
     /// How often to check Duet when nothing is known to be running, so tasks started elsewhere are found. 0 = never.
     @Published var duetWatchMinutes: Int { didSet { defaults.set(duetWatchMinutes, forKey: Key.duetWatchMinutes) } }
+    /// How often to flip Claude's window to its chat tab to read the chat list while you are in a
+    /// Code session. 0 = never (chats are then read only while that tab is on screen), -1 = Live.
+    @Published var chatsLookMinutes: Int { didSet { defaults.set(chatsLookMinutes, forKey: Key.chatsLookMinutes) } }
 
     /// Off unless you switch it on: record the front app, window title and visible text so a
     /// Claude session can suggest skills from work done outside Claude.
@@ -177,6 +181,7 @@ final class Settings: ObservableObject {
         hiddenChats = UserDefaults.standard.stringArray(forKey: Key.hiddenChats) ?? []
         duetPeekMinutes = Self.int(Key.duetPeekMinutes, default: 2)
         duetWatchMinutes = Self.int(Key.duetWatchMinutes, default: 5)
+        chatsLookMinutes = Self.int(Key.chatsLookMinutes, default: 0)
         observeScreen = Self.bool(Key.observeScreen, default: false)
         observeExcludedApps = Self.excludedApps()
         observeRetentionDays = Self.int(Key.observeRetentionDays, default: 7)
@@ -194,6 +199,13 @@ final class Settings: ObservableObject {
 
     func unhideChat(_ title: String) {
         hiddenChats.removeAll { $0 == title }
+    }
+
+    /// The Duet look-in choices: "Live" is stored as -1.
+    static let live = -1
+    /// Seconds between Duet look-ins for a stored choice: nil when off, 15 seconds for Live.
+    static func lookInterval(_ value: Int) -> TimeInterval? {
+        value == 0 ? nil : value < 0 ? 15 : TimeInterval(value * 60)
     }
 
     static func bool(_ key: String, default fallback: Bool) -> Bool {
