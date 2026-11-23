@@ -988,6 +988,13 @@ struct PanelView: View {
             }
             .help("\(asking) waiting on your answer · \(waiting) done · \(working) working")
             Spacer(minLength: 4)
+            Image(systemName: "person.3.fill")
+                .font(.system(size: 10 * scale, weight: .semibold))
+                .foregroundStyle(Palette.text2)
+                .frame(width: 20, height: 16)
+                .contentShape(Rectangle())
+                .onTapGesture { NotificationCenter.default.post(name: HuddleStore.toggleNotification, object: nil) }
+                .help("Show or hide the Agent Huddle")
             watchToggle
             LiveBadge(store: store, connections: connections) { layout.showSettings = true }
             Menu {
@@ -2510,6 +2517,9 @@ private struct SettingsView: View {
                 toggle("Chats", $settings.showChats)
                 toggle("Skills worth creating", $settings.showSkillIdeas)
                 toggle("Your usage and limits", $settings.showUsage)
+            }
+            if let huddle = HuddleStore.current {
+                section("Agent Huddle") { HuddleSettings(store: huddle) }
             }
             if settings.showDuet {
                 section("Duet") {

@@ -32,6 +32,41 @@ It lists your Claude Code sessions, Duet tasks, artifacts, recent chats and open
 - **Settings** (the gear icon) to switch each section on or off and set reminder and retention times.
 - **Menu-bar icon** with a count of sessions waiting on you. Left-click shows or hides the panel; right-click opens a menu.
 
+## Agent Huddle
+
+A second floating window that shows each Claude Code agent as a card, and lets you answer permission prompts and questions without switching to the session. Show or hide it with the people icon in the panel's header, or from the menu-bar menu.
+
+Each card has:
+
+- **A pixel robot** in a colour of its own, the session's title, and one line on what it is doing now ("Editing Views.swift", "Run the test suite").
+- **A step counter and progress bar** from the checklist Claude keeps for the task: Claude Desktop's task list, or `TodoWrite` in the terminal. Click the card to see the whole list, with the current step spinning.
+- **A Terminal box** with the last shell command and the last lines it printed. Claude writes a command's output only when it ends, so a running command shows how long it has been going, not live output.
+- **Needs permission:** a lime border, the tool call waiting for approval (`Bash: npm test`), and Allow and Deny.
+- **Asks a question:** the question, its header tag and options (radio buttons, or checkboxes for multi-select), a box for something else, and Send.
+- **Open** (↗) opens the session in Claude Desktop; **×** hides the card until the agent does something new.
+
+The header has a live dot, the number of agents, a speaker button to mute the chime that plays when an agent starts needing you, a fold button and a close button. Settings → Agent Huddle can also stop the huddle from coming forward on its own.
+
+### Answering from the huddle
+
+Allow, Deny and question answers reach the agent through Claude Code's `PermissionRequest` hook. Settings → Agent Huddle → **Answer from the huddle** adds one entry to `~/.claude/settings.json` (a copy of the old file is kept as `settings.json.pulse-backup`); switching it off removes it. The hook is this app's own binary run with `--huddle-hook`.
+
+How it behaves:
+
+- Claude shows its own prompt and runs the hook at the same moment. Whichever you answer first wins, and Claude withdraws the other. Nothing is taken away from Claude's own prompt.
+- When Pulse is not running, the hook steps aside at once and Claude's prompt is the only one.
+- It works for Claude Desktop's Code sessions and for `claude` in a terminal. A session reads its settings when it starts, so sessions already open keep asking in Claude only until restarted.
+
+What it can't do:
+
+- **Questions Claude asks as its turn ends** (the box under its last message) are not a tool call, so no hook sees them. The huddle shows the question with **Answer in Claude**, which opens the session; the reply has to be typed there.
+- **Prompts that were already up** before the hook was on, or in a session started without it, show the tool call with **In Claude** only.
+- **Live command output.** See the Terminal box above.
+
+Requests wait in `~/Library/Application Support/ClaudePulse/huddle/requests/` and answers in `.../huddle/responses/`. Each request names the hook's process, and one whose process has ended is cleared, so a prompt answered in Claude leaves the huddle within a second or two.
+
+`ClaudePulse --huddle-snapshot out.png [--expand]` renders the huddle to a file and quits.
+
 ## Requirements
 
 - macOS 14 or later, with Claude Desktop installed.
@@ -180,6 +215,9 @@ Sources/ClaudePulse/
   AXProbe.swift        diagnostics for mapping Claude's screens
   AXHelpers.swift      shared Accessibility wrappers
   ActivityObserver.swift  optional screen watching: front app, title and visible text
+  Huddle.swift         Agent Huddle: transcript reader, permission requests, hook installer
+  HuddleHook.swift     the PermissionRequest hook (`ClaudePulse --huddle-hook`)
+  HuddleView.swift     the huddle's window, cards and settings
 tools/usage_stats.py   exact usage counts from local transcripts
 tools/activity_stats.py  summary of the screen-watching log
 tools/install-autostart.sh  start at login and with Claude Desktop

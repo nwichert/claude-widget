@@ -10,6 +10,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let github = GitHubReader()
     private let insights = InsightsStore()
     private let activity = ActivityObserver()
+    private lazy var huddle = HuddleStore(sessions: store)
+    private var huddlePanel: HuddlePanelController!
     private var panel: PanelController!
     private var statusItem: NSStatusItem!
     private var cancellables = Set<AnyCancellable>()
@@ -239,6 +241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         store.sidebar = { [chats] in chats.sidebar }
         store.start()
+        startHuddle()
         chats.start()
         artifacts.onNewMentions = { [weak self] item in self?.notifyMention(item) }
         artifacts.onNewShare = { [weak self] item in self?.notifyShare(item) }
@@ -252,6 +255,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         ModelFit.shared.start()
         StorageStore.shared.start()
 
+        // `ClaudePulse --huddle-snapshot out.png [--expand]` renders the huddle to a file and quits.
+        if let i = CommandLine.arguments.firstIndex(of: "--huddle-snapshot"), CommandLine.arguments.count > i + 1 {
+            let path = CommandLine.arguments[i + 1]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [huddle, huddlePanel] in
+                huddlePanel?.snapshot(to: path, expandAll: CommandLine.arguments.contains("--expand"),
+                                      agents: huddle.agents.map(\.id))
+                NSApp.terminate(nil)
+            }
+            return
+        }
         // `ClaudePulse --snapshot out.png` renders the panel to a file and quits (for checking layout).
         if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), CommandLine.arguments.count > i + 1 {
             let path = CommandLine.arguments[i + 1]
@@ -269,6 +282,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         if !UserDefaults.standard.bool(forKey: panelHiddenKey) { panel.show() }
+        if huddlePanel.wantsShow { huddlePanel.show() }
+    }
+
+    /// The Agent Huddle: its own floating window, a chime when an agent starts needing you.
+    private func startHuddle() {
+        HuddleStore.current = huddle
+        huddlePanel = HuddlePanelController(store: huddle)
+        huddle.onNeed = { [weak self] agent in
+            guard let self else { return }
+            if !self.huddle.muted { NSSound(named: "Glass")?.play() }
+            if self.huddle.openOnNeed { self.huddlePanel.reveal() }
+            _ = agent
+        }
+        NotificationCenter.default.addObserver(forName: HuddleStore.toggleNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.huddlePanel.toggle()
+        }
+        huddle.start()
     }
 
     // MARK: - Menu bar
@@ -311,6 +341,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let menu = NSMenu()
         menu.addItem(withTitle: panel.isVisible ? "Hide panel" : "Show panel",
                      action: #selector(togglePanel), keyEquivalent: "").target = self
+        menu.addItem(withTitle: huddlePanel.isVisible ? "Hide Agent Huddle" : "Show Agent Huddle",
+                     action: #selector(toggleHuddle), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Sessions waiting for you",
                      action: #selector(openWaiting), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Reset panel size",
@@ -363,6 +395,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         FileManager.default.createFile(atPath: dir.appendingPathComponent("quit-by-user").path, contents: nil)
         NSApp.terminate(nil)
     }
+
+    @objc private func toggleHuddle() { huddlePanel.toggle() }
 
     @objc private func resetPanelSize() { panel.resetSize() }
 
@@ -513,6 +547,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         completionHandler()
     }
 }
+
+// Claude Code runs this same binary as its PermissionRequest hook; that mode never starts the app.
+HuddleHook.runIfRequested()
+HuddleHookInstaller.runTestIfRequested()
 
 let app = NSApplication.shared
 let delegate = AppDelegate()
