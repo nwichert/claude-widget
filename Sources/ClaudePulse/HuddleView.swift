@@ -677,22 +677,32 @@ final class HuddlePanelController: NSObject, NSWindowDelegate {
 struct HuddleSettings: View {
     @Environment(\.uiScale) private var scale
     @ObservedObject var store: HuddleStore
+    @ObservedObject private var settings = Settings.shared
     @State private var error: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            row("Answer from the huddle", Binding(
-                get: { store.hookInstalled },
-                set: { on in
-                    error = HuddleHookInstaller.install(on)
-                    store.refreshHookState()
-                }))
-            note(store.hookInstalled
-                 ? "Pulse's hook is in ~/.claude/settings.json. Claude still shows its own prompt too, and whichever you answer first wins. Sessions started before you turned this on keep asking in Claude only. If Pulse isn't running, the hook steps aside."
-                 : "Adds a small hook to ~/.claude/settings.json so Allow, Deny and question answers in the huddle reach the agent. Without it the huddle still shows every agent, and you answer in Claude.")
-            if let error { note(error).foregroundStyle(Palette.attention) }
-            row("Chime when an agent needs you", Binding(get: { !store.muted }, set: { store.muted = !$0 }))
-            row("Bring the huddle up when an agent needs you", $store.openOnNeed)
+            row("Agent Huddle", $settings.showHuddle)
+            note("A floating window with a card for each Claude Code agent: what it's doing, its checklist, its last command, and any permission or question it's waiting on.")
+            if settings.showHuddle {
+                VStack(alignment: .leading, spacing: 7) {
+                    row("Answer from the huddle", Binding(
+                        get: { store.hookInstalled },
+                        set: { on in
+                            error = HuddleHookInstaller.install(on)
+                            store.refreshHookState()
+                        }))
+                    note(store.hookInstalled
+                         ? "Pulse's hook is in ~/.claude/settings.json. Claude still shows its own prompt too, and whichever you answer first wins. Sessions started before you turned this on keep asking in Claude only."
+                         : "Adds a small hook to ~/.claude/settings.json so Allow, Deny and question answers in the huddle reach the agent. Without it, you answer in Claude.")
+                    if let error { note(error).foregroundStyle(Palette.attention) }
+                    row("Chime when an agent needs you", Binding(get: { !store.muted }, set: { store.muted = !$0 }))
+                    row("Bring the huddle up when an agent needs you", $store.openOnNeed)
+                }
+                .padding(.leading, 12)
+            } else if store.hookInstalled {
+                note("The answer hook is still in ~/.claude/settings.json but steps aside while the huddle is off.")
+            }
         }
     }
 

@@ -996,9 +996,11 @@ struct PanelView: View {
                 Divider()
                 Button("Sessions waiting for you") { Self.openLink("claude://code/needs-input") }
                 Button("Search sessions") { Self.openLink("claude://code/search") }
-                Divider()
-                Button("Show or hide Agent Huddle") {
-                    NotificationCenter.default.post(name: HuddleStore.toggleNotification, object: nil)
+                if settings.showHuddle {
+                    Divider()
+                    Button("Show or hide Agent Huddle") {
+                        NotificationCenter.default.post(name: HuddleStore.toggleNotification, object: nil)
+                    }
                 }
             } label: {
                 Image(systemName: "plus").font(.system(size: 10.5 * scale, weight: .semibold))

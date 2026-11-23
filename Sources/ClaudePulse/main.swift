@@ -282,7 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         if !UserDefaults.standard.bool(forKey: panelHiddenKey) { panel.show() }
-        if huddlePanel.wantsShow { huddlePanel.show() }
+        if Settings.shared.showHuddle && huddlePanel.wantsShow { huddlePanel.show() }
     }
 
     /// The Agent Huddle: its own floating window, a chime when an agent starts needing you.
@@ -290,14 +290,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         HuddleStore.current = huddle
         huddlePanel = HuddlePanelController(store: huddle)
         huddle.onNeed = { [weak self] agent in
-            guard let self else { return }
+            guard let self, Settings.shared.showHuddle else { return }
             if !self.huddle.muted { NSSound(named: "Glass")?.play() }
             if self.huddle.openOnNeed { self.huddlePanel.reveal() }
             _ = agent
         }
         NotificationCenter.default.addObserver(forName: HuddleStore.toggleNotification, object: nil, queue: .main) { [weak self] _ in
+            guard Settings.shared.showHuddle else { return }
             self?.huddlePanel.toggle()
         }
+        // The settings switch turns the whole feature on or off: the window with it.
+        Settings.shared.$showHuddle.dropFirst().removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] on in
+                guard let self else { return }
+                if on { self.huddlePanel.show() } else { self.huddlePanel.hide() }
+            }
+            .store(in: &cancellables)
         huddle.start()
     }
 
@@ -341,8 +350,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let menu = NSMenu()
         menu.addItem(withTitle: panel.isVisible ? "Hide panel" : "Show panel",
                      action: #selector(togglePanel), keyEquivalent: "").target = self
-        menu.addItem(withTitle: huddlePanel.isVisible ? "Hide Agent Huddle" : "Show Agent Huddle",
-                     action: #selector(toggleHuddle), keyEquivalent: "").target = self
+        if Settings.shared.showHuddle {
+            menu.addItem(withTitle: huddlePanel.isVisible ? "Hide Agent Huddle" : "Show Agent Huddle",
+                         action: #selector(toggleHuddle), keyEquivalent: "").target = self
+        }
         menu.addItem(withTitle: "Sessions waiting for you",
                      action: #selector(openWaiting), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Reset panel size",

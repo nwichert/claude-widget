@@ -504,8 +504,15 @@ final class HuddleStore: ObservableObject {
     }
 
     private func tick() {
-        // Tell the hook Pulse is here to answer. Without a fresh beat it steps aside at once.
         let fm = FileManager.default
+        // With the huddle off there is nothing to show and nobody to answer: let the hook step aside.
+        guard Settings.bool("showHuddle", default: false) else {
+            try? fm.removeItem(at: Self.heartbeat)
+            primed = false
+            DispatchQueue.main.async { if !self.agents.isEmpty { self.agents = [] } }
+            return
+        }
+        // Tell the hook Pulse is here to answer. Without a fresh beat it steps aside at once.
         if !fm.fileExists(atPath: Self.heartbeat.path) {
             fm.createFile(atPath: Self.heartbeat.path, contents: Data())
         }
