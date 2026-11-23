@@ -36,6 +36,8 @@ It lists your Claude Code sessions, Duet tasks, artifacts, recent chats and open
 
 A second floating window that shows each Claude Code agent as a card, and lets you answer permission prompts and questions without switching to the session. It is off until you turn it on in Settings → Agent Huddle. Once on, show or hide the window from the + menu in the panel's header, or from the menu-bar menu. Turning it off closes the window, and the answer hook (if installed) steps aside so Claude's own prompts are the only ones.
 
+**Docking.** Drag the huddle by its title (the ≡ grip, the dot or the words "Agent Huddle") into the Pulse panel. A clay line shows where it will land: above everything, or after any section (Needs You, Code, Pull requests, Duet tasks, Artifacts, Chats, skills, usage or storage). Let go and it becomes a section of the panel there; drag it by its title again to move it to another spot, or out of the panel to float it in its own window where you let go. Where it sits is remembered across restarts. The panel only takes a drop while it shows its list, not while it is minimized or on the settings page.
+
 Each card has:
 
 - **A pixel robot** in a colour of its own, the session's title, and one line on what it is doing now ("Editing Views.swift", "Run the test suite").

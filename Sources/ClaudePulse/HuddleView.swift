@@ -53,6 +53,8 @@ struct PixelRobot: View {
 }
 
 final class HuddleLayout: ObservableObject {
+    /// One state for the window and the docked copy, so folding or opening a card carries over.
+    static let shared = HuddleLayout()
     @Published var collapsed = UserDefaults.standard.bool(forKey: "huddleCollapsed") {
         didSet { UserDefaults.standard.set(collapsed, forKey: "huddleCollapsed") }
     }
@@ -60,9 +62,115 @@ final class HuddleLayout: ObservableObject {
     @Published var expanded: Set<String> = []
 }
 
+/// Where the huddle lives: floating in its own window, or docked in Pulse's panel between two
+/// sections. Dragging the huddle's header moves it; letting go over the panel docks it where the
+/// clay line shows, and letting go anywhere else floats it there.
+final class HuddleDock: ObservableObject {
+    static let shared = HuddleDock()
+
+    /// The panel section the docked huddle follows ("top" for above them all); nil while floating.
+    @Published var anchor: String? = UserDefaults.standard.string(forKey: "huddleDockAnchor") {
+        didSet { UserDefaults.standard.set(anchor, forKey: "huddleDockAnchor") }
+    }
+    /// Hidden with its close button or the menu. Docked or floating, it comes back where it was.
+    @Published var hidden = UserDefaults.standard.bool(forKey: "huddleHidden") {
+        didSet { UserDefaults.standard.set(hidden, forKey: "huddleHidden") }
+    }
+    @Published private(set) var dragging = false
+    /// Where it would dock if let go now.
+    @Published private(set) var dropAnchor: String?
+
+    /// The panel's visible sections, top to bottom, in the panel's own view coordinates
+    /// (origin top-left). Reported by the panel as it lays out.
+    var slots: [(id: String, frame: CGRect)] = []
+    /// Converts a point in screen coordinates to the panel's view coordinates; nil when the
+    /// panel is hidden, minimized, or showing settings.
+    var panelPoint: ((NSPoint) -> CGPoint?)?
+    /// The floating window's frame and a way to move it, from its controller.
+    var floatingFrame: (() -> NSRect)?
+    var moveFloating: ((NSPoint) -> Void)?
+
+    private var grab = NSPoint.zero
+
+    /// The docked huddle's header, in the panel's view coordinates: the handle for dragging it out.
+    var dockedHeader: CGRect? {
+        guard anchor != nil, let f = slots.first(where: { $0.id == "huddle" })?.frame, f.height > 1 else { return nil }
+        return CGRect(x: f.minX, y: f.minY, width: f.width, height: 40)
+    }
+
+    /// The section a drop at this screen point would follow, or nil if it is not over the panel.
+    func anchor(at screen: NSPoint) -> String? {
+        guard let p = panelPoint?(screen) else { return nil }
+        let visible = slots.filter { $0.frame.height > 1 && $0.id != "huddle" }
+        guard !visible.isEmpty else { return "top" }
+        var previous = "top"
+        for slot in visible {
+            if p.y < slot.frame.midY { return previous }
+            previous = slot.id
+        }
+        return previous
+    }
+
+    func dragMoved() {
+        let mouse = NSEvent.mouseLocation
+        if !dragging {
+            dragging = true
+            if anchor == nil, let f = floatingFrame?() {
+                grab = NSPoint(x: mouse.x - f.minX, y: f.maxY - mouse.y)
+            } else {
+                grab = NSPoint(x: 60, y: 16)  // pick the docked huddle up by its header
+            }
+        }
+        moveFloating?(NSPoint(x: mouse.x - grab.x, y: mouse.y + grab.y))
+        let target = anchor(at: mouse)
+        if dropAnchor != target { dropAnchor = target }
+    }
+
+    func dragEnded() {
+        guard dragging else { return }
+        anchor = anchor(at: NSEvent.mouseLocation)
+        dropAnchor = nil
+        dragging = false
+    }
+}
+
+/// The handle behind the huddle's header. A native view, so a press on it never moves the
+/// window it sits in (Pulse's panel moves when dragged by its background), and it runs the drag
+/// that carries the huddle in and out of the panel.
+private struct HuddleDragHandle: NSViewRepresentable {
+    final class HandleView: NSView {
+        private var start: NSPoint?
+        private var moving = false
+        override var mouseDownCanMoveWindow: Bool { false }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override func mouseDown(with event: NSEvent) {
+            start = NSEvent.mouseLocation
+            moving = false
+        }
+        override func mouseDragged(with event: NSEvent) {
+            guard let start else { return }
+            let now = NSEvent.mouseLocation
+            if !moving, hypot(now.x - start.x, now.y - start.y) < 3 { return }
+            moving = true
+            HuddleDock.shared.dragMoved()
+        }
+        override func mouseUp(with event: NSEvent) {
+            if moving { HuddleDock.shared.dragEnded() }
+            start = nil
+            moving = false
+        }
+        override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
+    }
+
+    func makeNSView(context: Context) -> HandleView { HandleView() }
+    func updateNSView(_ view: HandleView, context: Context) {}
+}
+
 struct HuddleView: View {
     @ObservedObject var store: HuddleStore
     @ObservedObject var layout: HuddleLayout
+    /// Shown inside Pulse's panel rather than in its own window.
+    var docked = false
     var close: () -> Void
 
     var body: some View {
@@ -94,22 +202,31 @@ struct HuddleView: View {
                 }
             }
         }
-        .padding(10)
-        .frame(width: 380, alignment: .leading)
+        .padding(docked ? 8 : 10)
+        .frame(width: docked ? nil : 380, alignment: .leading)
+        .frame(maxWidth: docked ? .infinity : nil, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Palette.background)
-                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Palette.border))
+            RoundedRectangle(cornerRadius: docked ? 12 : 16, style: .continuous)
+                .fill(docked ? Palette.raised.opacity(0.55) : Palette.background)
+                .overlay(RoundedRectangle(cornerRadius: docked ? 12 : 16, style: .continuous).strokeBorder(Palette.border))
         )
         .environment(\.colorScheme, .dark)
     }
 
     private var header: some View {
         HStack(spacing: 8) {
-            Circle().fill(store.agents.contains { $0.state == .working } ? HuddlePalette.lime : Palette.text3)
-                .frame(width: 8, height: 8)
-            Text("Agent Huddle").font(.system(size: 14, weight: .bold)).foregroundStyle(Palette.text)
-            Text("\(store.agents.count)").font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.text3)
+            // The title is the grip: the handle lies over it, as text would otherwise take the press.
+            HStack(spacing: 8) {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Palette.text3)
+                Circle().fill(store.agents.contains { $0.state == .working } ? HuddlePalette.lime : Palette.text3)
+                    .frame(width: 8, height: 8)
+                Text("Agent Huddle").font(.system(size: 14, weight: .bold)).foregroundStyle(Palette.text)
+                Text("\(store.agents.count)").font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.text3)
+            }
+            .overlay(HuddleDragHandle())
+            .help(docked ? "Drag out of the panel to float the huddle" : "Drag into the Pulse panel to dock it between sections")
             Spacer(minLength: 6)
             iconButton(store.muted ? "speaker.slash" : "speaker.wave.2",
                        help: store.muted ? "Turn the chime back on" : "Mute the chime") { store.muted.toggle() }
@@ -119,6 +236,8 @@ struct HuddleView: View {
         }
         .padding(.horizontal, 6)
         .padding(.top, 2)
+        .padding(.bottom, 2)
+        .background(HuddleDragHandle())
     }
 
     private func iconButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
@@ -131,6 +250,35 @@ struct HuddleView: View {
         }
         .buttonStyle(.plain)
         .help(help)
+    }
+}
+
+/// The huddle as a section of Pulse's panel. While it is being dragged out it stays in place,
+/// faded, so the drag is not cut short.
+struct DockedHuddle: View {
+    @ObservedObject var store: HuddleStore
+    @ObservedObject var dock = HuddleDock.shared
+    @ObservedObject var layout = HuddleLayout.shared
+
+    var body: some View {
+        HuddleView(store: store, layout: layout, docked: true) { dock.hidden = true }
+            .opacity(dock.dragging ? 0.35 : 1)
+    }
+}
+
+/// The clay line that shows where the huddle will land.
+struct HuddleDropLine: View {
+    var body: some View {
+        HStack(spacing: 6) {
+            Capsule().fill(Palette.attention).frame(height: 3)
+            Text("Agent Huddle")
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(Palette.attention)
+                .fixedSize()
+            Capsule().fill(Palette.attention).frame(height: 3)
+        }
+        .padding(.horizontal, 10)
+        .allowsHitTesting(false)
     }
 }
 
@@ -568,28 +716,29 @@ private final class HuddleHostingView<Content: View>: NSHostingView<Content> {
 final class HuddlePanelController: NSObject, NSWindowDelegate {
     private let panel: HuddleWindow
     private let hosting: NSView
-    private let layout = HuddleLayout()
+    private let layout = HuddleLayout.shared
+    private let dock = HuddleDock.shared
     private var cancellables = Set<AnyCancellable>()
     private let originKey = "huddleTopLeft"
-    private let hiddenKey = "huddleHidden"
 
-    var isVisible: Bool { panel.isVisible }
-    var onVisibilityChange: (() -> Void)?
+    /// Shown, docked or floating: what the menu's Show / Hide goes by.
+    var isVisible: Bool { Settings.shared.showHuddle && !dock.hidden }
 
     init(store: HuddleStore) {
         panel = HuddleWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 200),
                              styleMask: [.borderless, .nonactivatingPanel],
                              backing: .buffered, defer: false)
-        var closeAction: () -> Void = {}
-        let host = HuddleHostingView(rootView: HuddleView(store: store, layout: layout, close: { closeAction() }))
+        let host = HuddleHostingView(rootView: HuddleView(store: store, layout: HuddleLayout.shared,
+                                                         close: { HuddleDock.shared.hidden = true }))
         host.sizingOptions = [.intrinsicContentSize]
         hosting = host
         super.init()
-        closeAction = { [weak self] in self?.hide() }
 
-        panel.level = .floating
+        // One step above Pulse's panel, so it stays in view while dragged over it.
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        panel.isMovableByWindowBackground = true
+        // Moved by its header only, so a drag can be followed into the panel.
+        panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -600,33 +749,40 @@ final class HuddlePanelController: NSObject, NSWindowDelegate {
         fit()
         restorePosition()
 
+        dock.floatingFrame = { [weak self] in self?.panel.frame ?? .zero }
+        dock.moveFloating = { [weak self] topLeft in
+            guard let self else { return }
+            self.panel.setFrameTopLeftPoint(topLeft)
+            if !self.panel.isVisible { self.panel.orderFrontRegardless() }
+        }
+
         store.objectWillChange.map { _ in () }
             .merge(with: layout.objectWillChange.map { _ in () })
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in DispatchQueue.main.async { self?.fit() } }
             .store(in: &cancellables)
+        dock.objectWillChange.map { _ in () }
+            .merge(with: Settings.shared.objectWillChange.map { _ in () })
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in DispatchQueue.main.async { self?.refresh() } }
+            .store(in: &cancellables)
     }
 
-    var wantsShow: Bool { !UserDefaults.standard.bool(forKey: hiddenKey) }
-
-    func show() {
-        panel.orderFrontRegardless()
-        UserDefaults.standard.set(false, forKey: hiddenKey)
-        onVisibilityChange?()
+    /// Floats only while on, not hidden, and not docked (or on its way out of the dock).
+    func refresh() {
+        let float = Settings.shared.showHuddle && !dock.hidden && (dock.anchor == nil || dock.dragging)
+        if float && !panel.isVisible { fit(); panel.orderFrontRegardless() }
+        if !float && panel.isVisible { panel.orderOut(nil) }
     }
 
-    func hide() {
-        panel.orderOut(nil)
-        UserDefaults.standard.set(true, forKey: hiddenKey)
-        onVisibilityChange?()
-    }
-
+    func show() { dock.hidden = false; refresh() }
+    func hide() { dock.hidden = true; refresh() }
     func toggle() { isVisible ? hide() : show() }
 
     /// Unfolds the huddle if it was folded to its header, so a new request is in view.
     func reveal() {
         layout.collapsed = false
-        if !isVisible { show() }
+        show()
     }
 
     func snapshot(to path: String, expandAll: Bool = false, agents: [String] = []) {

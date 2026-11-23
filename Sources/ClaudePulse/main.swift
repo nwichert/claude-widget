@@ -199,7 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return
         }
 
-        panel = PanelController(store: store, chats: chats, artifacts: artifacts, github: github, insights: insights, activity: activity) { [weak self] row in self?.open(row) }
+        panel = PanelController(store: store, huddle: huddle, chats: chats, artifacts: artifacts, github: github, insights: insights, activity: activity) { [weak self] row in self?.open(row) }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
@@ -282,7 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         if !UserDefaults.standard.bool(forKey: panelHiddenKey) { panel.show() }
-        if Settings.shared.showHuddle && huddlePanel.wantsShow { huddlePanel.show() }
+        huddlePanel.refresh()
     }
 
     /// The Agent Huddle: its own floating window, a chime when an agent starts needing you.
@@ -304,7 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .receive(on: DispatchQueue.main)
             .sink { [weak self] on in
                 guard let self else { return }
-                if on { self.huddlePanel.show() } else { self.huddlePanel.hide() }
+                if on { self.huddlePanel.show() } else { self.huddlePanel.refresh() }
             }
             .store(in: &cancellables)
         huddle.start()

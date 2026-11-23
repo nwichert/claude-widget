@@ -26,7 +26,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     var isVisible: Bool { panel.isVisible }
 
-    init(store: SessionStore, chats: ChatReader, artifacts: ArtifactStore, github: GitHubReader, insights: InsightsStore, activity: ActivityObserver, open: @escaping (SessionRow) -> Void) {
+    init(store: SessionStore, huddle: HuddleStore, chats: ChatReader, artifacts: ArtifactStore, github: GitHubReader, insights: InsightsStore, activity: ActivityObserver, open: @escaping (SessionRow) -> Void) {
         panel = FloatingPanel(
             contentRect: NSRect(x: 0, y: 0, width: PanelLayout.defaultWidth, height: 120),
             styleMask: [.borderless, .nonactivatingPanel, .resizable],
@@ -38,7 +38,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         let savedHeight = CGFloat(defaults.double(forKey: heightKey))
         layout.manualHeight = savedHeight >= Self.minSize.height
 
-        let host = ClickThroughHostingView(rootView: PanelView(store: store, layout: layout, chats: chats, artifacts: artifacts, github: github, insights: insights, activity: activity, open: open))
+        let host = ClickThroughHostingView(rootView: PanelView(store: store, huddle: huddle, layout: layout, chats: chats, artifacts: artifacts, github: github, insights: insights, activity: activity, open: open))
         // Report an ideal size for auto-fit, but never pin the window's min/max to it:
         // the window has to stay free to be dragged to any size.
         host.sizingOptions = [.intrinsicContentSize]
@@ -59,6 +59,15 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.contentView = hosting
         panel.delegate = self
 
+        // Lets a huddle being dragged find the section under the pointer. Only while the list
+        // is what the panel shows: not minimized, not on the settings page.
+        HuddleDock.shared.panelPoint = { [weak self] screen in
+            guard let self, self.panel.isVisible, !self.layout.minimized, !self.layout.showSettings else { return nil }
+            let f = self.panel.frame
+            guard f.insetBy(dx: -8, dy: -8).contains(screen) else { return nil }
+            return CGPoint(x: screen.x - f.minX, y: f.maxY - screen.y)
+        }
+
         if layout.manualHeight {
             panel.setContentSize(NSSize(width: layout.width, height: savedHeight))
         } else {
@@ -73,14 +82,19 @@ final class PanelController: NSObject, NSWindowDelegate {
             .store(in: &cancellables)
 
         // Opening settings or hiding a line changes the height too.
-        layout.objectWillChange.map { _ in () }
-            .merge(with: chats.objectWillChange.map { _ in () })
-            .merge(with: artifacts.objectWillChange.map { _ in () })
-            .merge(with: github.objectWillChange.map { _ in () })
-            .merge(with: insights.objectWillChange.map { _ in () })
-            .merge(with: activity.objectWillChange.map { _ in () })
-            .merge(with: ModelFit.shared.objectWillChange.map { _ in () })
-            .merge(with: Settings.shared.objectWillChange.map { _ in () })
+        let changes: [AnyPublisher<Void, Never>] = [
+            layout.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+            chats.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+            artifacts.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+            github.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+            insights.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+            activity.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+            huddle.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+            HuddleDock.shared.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+            ModelFit.shared.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+            Settings.shared.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+        ]
+        Publishers.MergeMany(changes)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in
                 DispatchQueue.main.async { self?.fit() }

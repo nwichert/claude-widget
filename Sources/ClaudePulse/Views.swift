@@ -57,6 +57,8 @@ final class PanelLayout: ObservableObject {
 
 struct PanelView: View {
     @ObservedObject var store: SessionStore
+    @ObservedObject var huddle: HuddleStore
+    @ObservedObject private var dock = HuddleDock.shared
     @ObservedObject var layout: PanelLayout
     @ObservedObject var chats: ChatReader
     @ObservedObject var artifacts: ArtifactStore
@@ -301,20 +303,56 @@ struct PanelView: View {
     }
 
     @ViewBuilder private func list(limit: Int?) -> some View {
-        needsYouSection
-        if settings.showCode { sessionList(limit: limit) }
-        if settings.showGitHub, !otherPullRequests.isEmpty { pullRequestSection }
-        if settings.showDuet, chats.trusted, chats.duetSeenAt != nil, !chats.duetSpaces.isEmpty || !(otherDuetTasks.isEmpty && !urgentDuetTasks.isEmpty) {
-            duetSection
+        VStack(alignment: .leading, spacing: 0) {
+            huddleSlot(after: "top")
+            slot("needs") { needsYouSection }
+            slot("code") { if settings.showCode { sessionList(limit: limit) } }
+            slot("github") { if settings.showGitHub, !otherPullRequests.isEmpty { pullRequestSection } }
+            slot("duet") {
+                if settings.showDuet, chats.trusted, chats.duetSeenAt != nil, !chats.duetSpaces.isEmpty || !(otherDuetTasks.isEmpty && !urgentDuetTasks.isEmpty) {
+                    duetSection
+                }
+            }
+            slot("artifacts") { if settings.showArtifacts, !otherArtifacts.isEmpty { artifactSection } }
+            slot("chats") { if settings.showChats { chatSection } }
+            slot("skills") { if let data = insights.insights, settings.showSkillIdeas { skillsSection(data) } }
+            slot("usage") { if let data = insights.insights, settings.showUsage { usageSection(data) } }
+            slot("storage") { if settings.showUsage { storageSection } }
+            Color.clear.frame(height: 8)  // so the last row never sits against the footer when scrolled
         }
-        if settings.showArtifacts, !otherArtifacts.isEmpty { artifactSection }
-        if settings.showChats { chatSection }
-        if let data = insights.insights {
-            if settings.showSkillIdeas { skillsSection(data) }
-            if settings.showUsage { usageSection(data) }
+        .coordinateSpace(name: "pulseList")
+        .onPreferenceChange(PanelSlotFrames.self) { frames in
+            dock.slots = Self.slotOrder.compactMap { id in frames[id].map { (id, $0) } }
         }
-        if settings.showUsage { storageSection }
-        Color.clear.frame(height: 8)  // so the last row never sits against the footer when scrolled
+    }
+
+    private static let slotOrder = ["huddle", "needs", "code", "github", "duet", "artifacts", "chats", "skills", "usage", "storage"]
+
+    /// One of the panel's sections, with its place reported so a dragged huddle can find it,
+    /// followed by the huddle if it is docked there.
+    @ViewBuilder private func slot<Content: View>(_ id: String, @ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .background(GeometryReader { geo in
+                Color.clear.preference(key: PanelSlotFrames.self, value: [id: geo.frame(in: .global)])
+            })
+            .overlay(alignment: .bottom) {
+                if dock.dragging, dock.dropAnchor == id { HuddleDropLine().offset(y: 2) }
+            }
+        huddleSlot(after: id)
+    }
+
+    @ViewBuilder private func huddleSlot(after id: String) -> some View {
+        if id == "top", dock.dragging, dock.dropAnchor == "top" {
+            HuddleDropLine().padding(.vertical, 2)
+        }
+        if settings.showHuddle, !dock.hidden, dock.anchor == id {
+            DockedHuddle(store: huddle)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 6)
+                .background(GeometryReader { geo in
+                    Color.clear.preference(key: PanelSlotFrames.self, value: ["huddle": geo.frame(in: .global)])
+                })
+        }
     }
 
     // MARK: Needs you
@@ -2670,5 +2708,14 @@ private struct SettingsView: View {
             .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Palette.track))
             .fixedSize()
         }
+    }
+}
+
+
+/// Where each of the panel's sections sits, in the panel's own coordinates.
+struct PanelSlotFrames: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue()) { $1 }
     }
 }
