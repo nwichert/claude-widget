@@ -90,7 +90,7 @@ final class Settings: ObservableObject {
     @Published var showInsights: Bool { didSet { defaults.set(showInsights, forKey: Key.showInsights) } }
     /// Skill ideas you have said no to, by name.
     @Published var dismissedIdeas: [String] { didSet { defaults.set(dismissedIdeas, forKey: Key.dismissedIdeas) } }
-    /// The Agent Huddle: a floating window with a card per agent. Off until you turn it on.
+    /// The Code Caddie: a floating window with a card per agent. Off until you turn it on.
     @Published var showHuddle: Bool { didSet { defaults.set(showHuddle, forKey: "showHuddle") } }
     @Published var showGitHub: Bool { didSet { defaults.set(showGitHub, forKey: Key.showGitHub) } }
     @Published var showArtifacts: Bool { didSet { defaults.set(showArtifacts, forKey: Key.showArtifacts) } }

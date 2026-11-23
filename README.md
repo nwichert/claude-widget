@@ -32,11 +32,11 @@ It lists your Claude Code sessions, Duet tasks, artifacts, recent chats and open
 - **Settings** (the gear icon) to switch each section on or off and set reminder and retention times.
 - **Menu-bar icon** with a count of sessions waiting on you. Left-click shows or hides the panel; right-click opens a menu.
 
-## Agent Huddle
+## Code Caddie
 
-A second floating window that shows each Claude Code agent as a card, and lets you answer permission prompts and questions without switching to the session. It is off until you turn it on in Settings → Agent Huddle. Once on, show or hide the window from the + menu in the panel's header, or from the menu-bar menu. Turning it off closes the window, and the answer hook (if installed) steps aside so Claude's own prompts are the only ones.
+A second floating window that shows each Claude Code agent as a card, and lets you answer permission prompts and questions without switching to the session. It is off until you turn it on in Settings → Code Caddie. Once on, show or hide the window from the + menu in the panel's header, or from the menu-bar menu. Turning it off closes the window, and the answer hook (if installed) steps aside so Claude's own prompts are the only ones.
 
-**Docking.** Drag the huddle by its title (the ≡ grip, the dot or the words "Agent Huddle") into the Pulse panel. A clay line shows where it will land: above everything, or after any section (Needs You, Code, Pull requests, Duet tasks, Artifacts, Chats, skills, usage or storage). Let go and it becomes a section of the panel there; drag it by its title again to move it to another spot, or out of the panel to float it in its own window where you let go. Where it sits is remembered across restarts. The panel only takes a drop while it shows its list, not while it is minimized or on the settings page. While the huddle sits in the panel it takes the Code section's place (switching it on docks it there), so sessions are shown once; drag it out of the panel and the Code list comes back.
+**Docking.** Drag Code Caddie by its title (the ≡ grip, the dot or the words "Code Caddie") into the Pulse panel. A clay line shows where it will land: above everything, or after any section (Needs You, Code, Pull requests, Duet tasks, Artifacts, Chats, skills, usage or storage). Let go and it becomes a section of the panel there; drag it by its title again to move it to another spot, or out of the panel to float it in its own window where you let go. Where it sits is remembered across restarts. The panel only takes a drop while it shows its list, not while it is minimized or on the settings page. While Code Caddie sits in the panel it takes the Code section's place (switching it on docks it there), so sessions are shown once; drag it out of the panel and the Code list comes back.
 
 Each card has:
 
@@ -47,11 +47,11 @@ Each card has:
 - **Asks a question:** the question, its header tag and options (radio buttons, or checkboxes for multi-select), a box for something else, and Send.
 - **Open** (↗) opens the session in Claude Desktop; **×** hides the card until the agent does something new.
 
-The header has a live dot, the number of agents, a speaker button to mute the chime that plays when an agent starts needing you, a fold button and a close button. Settings → Agent Huddle can also stop the huddle from coming forward on its own.
+The header has a live dot, the number of agents, a speaker button to mute the chime that plays when an agent starts needing you, a fold button and a close button. Settings → Code Caddie can also stop Code Caddie from coming forward on its own.
 
-### Answering from the huddle
+### Answering from Code Caddie
 
-Allow, Deny and question answers reach the agent through Claude Code's `PermissionRequest` hook. Settings → Agent Huddle → **Answer from the huddle** adds one entry to `~/.claude/settings.json` (a copy of the old file is kept as `settings.json.pulse-backup`); switching it off removes it. The hook is this app's own binary run with `--huddle-hook`.
+Allow, Deny and question answers reach the agent through Claude Code's `PermissionRequest` hook. Settings → Code Caddie → **Answer from Code Caddie** adds one entry to `~/.claude/settings.json` (a copy of the old file is kept as `settings.json.pulse-backup`); switching it off removes it. The hook is this app's own binary run with `--huddle-hook`.
 
 How it behaves:
 
@@ -61,13 +61,13 @@ How it behaves:
 
 What it can't do:
 
-- **Questions Claude asks as its turn ends** (the box under its last message) are not a tool call, so no hook sees them. The huddle shows the question with **Answer in Claude**, which opens the session; the reply has to be typed there.
+- **Questions Claude asks as its turn ends** (the box under its last message) are not a tool call, so no hook sees them. Code Caddie shows the question with **Answer in Claude**, which opens the session; the reply has to be typed there.
 - **Prompts that were already up** before the hook was on, or in a session started without it, show the tool call with **In Claude** only.
 - **Live command output.** See the Terminal box above.
 
-Requests wait in `~/Library/Application Support/ClaudePulse/huddle/requests/` and answers in `.../huddle/responses/`. Each request names the hook's process, and one whose process has ended is cleared, so a prompt answered in Claude leaves the huddle within a second or two.
+Requests wait in `~/Library/Application Support/ClaudePulse/huddle/requests/` and answers in `.../huddle/responses/`. Each request names the hook's process, and one whose process has ended is cleared, so a prompt answered in Claude leaves Code Caddie within a second or two.
 
-`ClaudePulse --huddle-snapshot out.png [--expand]` renders the huddle to a file and quits.
+`ClaudePulse --huddle-snapshot out.png [--expand]` renders Code Caddie to a file and quits.
 
 ## Requirements
 
@@ -217,9 +217,9 @@ Sources/ClaudePulse/
   AXProbe.swift        diagnostics for mapping Claude's screens
   AXHelpers.swift      shared Accessibility wrappers
   ActivityObserver.swift  optional screen watching: front app, title and visible text
-  Huddle.swift         Agent Huddle: transcript reader, permission requests, hook installer
+  Huddle.swift         Code Caddie: transcript reader, permission requests, hook installer
   HuddleHook.swift     the PermissionRequest hook (`ClaudePulse --huddle-hook`)
-  HuddleView.swift     the huddle's window, cards and settings
+  HuddleView.swift     Code Caddie's window, cards and settings
 tools/usage_stats.py   exact usage counts from local transcripts
 tools/activity_stats.py  summary of the screen-watching log
 tools/install-autostart.sh  start at login and with Claude Desktop

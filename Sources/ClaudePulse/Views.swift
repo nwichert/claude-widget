@@ -306,7 +306,7 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 0) {
             huddleSlot(after: "top")
             slot("needs") { needsYouSection }
-            // Agent Huddle takes the Code section's place while it sits in the panel.
+            // Code Caddie takes the Code section's place while it sits in the panel.
             slot("code") { if settings.showCode, !huddleInPanel { sessionList(limit: limit) } }
             slot("github") { if settings.showGitHub, !otherPullRequests.isEmpty { pullRequestSection } }
             slot("duet") {
@@ -1039,7 +1039,7 @@ struct PanelView: View {
                 Button("Search sessions") { Self.openLink("claude://code/search") }
                 if settings.showHuddle {
                     Divider()
-                    Button("Show or hide Agent Huddle") {
+                    Button("Show or hide Code Caddie") {
                         NotificationCenter.default.post(name: HuddleStore.toggleNotification, object: nil)
                     }
                 }
@@ -2555,7 +2555,7 @@ private struct SettingsView: View {
                 if settings.showCode {
                     sub {
                         if settings.showHuddle {
-                            note("While Agent Huddle sits in the panel, it takes this section's place. Drag the huddle out to bring the Code list back.")
+                            note("While Code Caddie sits in the panel, it takes this section's place. Drag Code Caddie out to bring the Code list back.")
                         }
                         toggle("Git branch and changes", $settings.showGit)
                         toggle("Context meter", $settings.showContext)
@@ -2623,7 +2623,7 @@ private struct SettingsView: View {
                 toggle("Larger text as the panel gets wider", $settings.scaleText)
             }
             if let huddle = HuddleStore.current {
-                section("Agent Huddle") { HuddleSettings(store: huddle) }
+                section("Code Caddie") { HuddleSettings(store: huddle) }
             }
             section("Notifications") {
                 toggle("Notifications", $settings.notifyOnFinish)

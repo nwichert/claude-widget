@@ -285,7 +285,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         huddlePanel.refresh()
     }
 
-    /// The Agent Huddle: its own floating window, a chime when an agent starts needing you.
+    /// The Code Caddie: its own floating window, a chime when an agent starts needing you.
     private func startHuddle() {
         HuddleStore.current = huddle
         huddlePanel = HuddlePanelController(store: huddle)
@@ -353,7 +353,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         menu.addItem(withTitle: panel.isVisible ? "Hide panel" : "Show panel",
                      action: #selector(togglePanel), keyEquivalent: "").target = self
         if Settings.shared.showHuddle {
-            menu.addItem(withTitle: huddlePanel.isVisible ? "Hide Agent Huddle" : "Show Agent Huddle",
+            menu.addItem(withTitle: huddlePanel.isVisible ? "Hide Code Caddie" : "Show Code Caddie",
                          action: #selector(toggleHuddle), keyEquivalent: "").target = self
         }
         menu.addItem(withTitle: "Sessions waiting for you",

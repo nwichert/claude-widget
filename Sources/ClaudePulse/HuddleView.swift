@@ -194,7 +194,7 @@ struct HuddleView: View {
                     }
                 }
                 if !store.hookInstalled && store.agents.contains(where: { $0.waitsWithoutHook }) {
-                    Text("To Allow, Deny or answer from here, turn on \"Answer from the huddle\" in Pulse settings.")
+                    Text("To Allow, Deny or answer from here, turn on \"Answer from Code Caddie\" in Pulse settings.")
                         .font(.system(size: 10.5))
                         .foregroundStyle(Palette.text3)
                         .padding(.horizontal, 4)
@@ -222,17 +222,17 @@ struct HuddleView: View {
                     .foregroundStyle(Palette.text3)
                 Circle().fill(store.agents.contains { $0.state == .working } ? HuddlePalette.lime : Palette.text3)
                     .frame(width: 8, height: 8)
-                Text("Agent Huddle").font(.system(size: 14, weight: .bold)).foregroundStyle(Palette.text)
+                Text("Code Caddie").font(.system(size: 14, weight: .bold)).foregroundStyle(Palette.text)
                 Text("\(store.agents.count)").font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.text3)
             }
             .overlay(HuddleDragHandle())
-            .help(docked ? "Drag out of the panel to float the huddle" : "Drag into the Pulse panel to dock it between sections")
+            .help(docked ? "Drag out of the panel to float Code Caddie" : "Drag into the Pulse panel to dock it between sections")
             Spacer(minLength: 6)
             iconButton(store.muted ? "speaker.slash" : "speaker.wave.2",
                        help: store.muted ? "Turn the chime back on" : "Mute the chime") { store.muted.toggle() }
             iconButton(layout.collapsed ? "chevron.down" : "chevron.up",
                        help: layout.collapsed ? "Show the agents" : "Fold to the header") { layout.collapsed.toggle() }
-            iconButton("xmark", help: "Hide the huddle") { close() }
+            iconButton("xmark", help: "Hide Code Caddie") { close() }
         }
         .padding(.horizontal, 6)
         .padding(.top, 2)
@@ -271,7 +271,7 @@ struct HuddleDropLine: View {
     var body: some View {
         HStack(spacing: 6) {
             Capsule().fill(Palette.attention).frame(height: 3)
-            Text("Agent Huddle")
+            Text("Code Caddie")
                 .font(.system(size: 9.5, weight: .semibold))
                 .foregroundStyle(Palette.attention)
                 .fixedSize()
@@ -553,7 +553,7 @@ private struct PermissionBox: View {
             if request == nil {
                 Text(agent.openURL == nil
                      ? "Answer it where the session is running."
-                     : "This prompt started before the huddle could take it. Answer it in Claude.")
+                     : "This prompt started before Code Caddie could take it. Answer it in Claude.")
                     .font(.system(size: 10.5))
                     .foregroundStyle(Palette.text3)
             }
@@ -616,7 +616,7 @@ private struct QuestionBox: View {
                 }
             }
             if request == nil {
-                Text("This question started before the huddle could take it. Answer it in Claude.")
+                Text("This question started before Code Caddie could take it. Answer it in Claude.")
                     .font(.system(size: 10.5))
                     .foregroundStyle(Palette.text3)
             }
@@ -838,11 +838,11 @@ struct HuddleSettings: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            row("Agent Huddle", $settings.showHuddle)
+            row("Code Caddie", $settings.showHuddle)
             note("A floating window with a card for each Claude Code agent: what it's doing, its checklist, its last command, and any permission or question it's waiting on.")
             if settings.showHuddle {
                 VStack(alignment: .leading, spacing: 7) {
-                    row("Answer from the huddle", Binding(
+                    row("Answer from Code Caddie", Binding(
                         get: { store.hookInstalled },
                         set: { on in
                             error = HuddleHookInstaller.install(on)
@@ -850,14 +850,14 @@ struct HuddleSettings: View {
                         }))
                     note(store.hookInstalled
                          ? "Pulse's hook is in ~/.claude/settings.json. Claude still shows its own prompt too, and whichever you answer first wins. Sessions started before you turned this on keep asking in Claude only."
-                         : "Adds a small hook to ~/.claude/settings.json so Allow, Deny and question answers in the huddle reach the agent. Without it, you answer in Claude.")
+                         : "Adds a small hook to ~/.claude/settings.json so Allow, Deny and question answers in Code Caddie reach the agent. Without it, you answer in Claude.")
                     if let error { note(error).foregroundStyle(Palette.attention) }
                     row("Chime when an agent needs you", Binding(get: { !store.muted }, set: { store.muted = !$0 }))
-                    row("Bring the huddle up when an agent needs you", $store.openOnNeed)
+                    row("Bring Code Caddie up when an agent needs you", $store.openOnNeed)
                 }
                 .padding(.leading, 12)
             } else if store.hookInstalled {
-                note("The answer hook is still in ~/.claude/settings.json but steps aside while the huddle is off.")
+                note("The answer hook is still in ~/.claude/settings.json but steps aside while Code Caddie is off.")
             }
         }
     }
