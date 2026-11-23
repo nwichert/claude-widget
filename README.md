@@ -34,7 +34,7 @@ It lists your Claude Code sessions, Duet tasks, artifacts, recent chats and open
 
 ## Agent Huddle
 
-A second floating window that shows each Claude Code agent as a card, and lets you answer permission prompts and questions without switching to the session. Show or hide it with the people icon in the panel's header, or from the menu-bar menu.
+A second floating window that shows each Claude Code agent as a card, and lets you answer permission prompts and questions without switching to the session. Show or hide it from the + menu in the panel's header, or from the menu-bar menu.
 
 Each card has:
 

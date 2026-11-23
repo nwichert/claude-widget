@@ -988,13 +988,6 @@ struct PanelView: View {
             }
             .help("\(asking) waiting on your answer · \(waiting) done · \(working) working")
             Spacer(minLength: 4)
-            Image(systemName: "person.3.fill")
-                .font(.system(size: 10 * scale, weight: .semibold))
-                .foregroundStyle(Palette.text2)
-                .frame(width: 20, height: 16)
-                .contentShape(Rectangle())
-                .onTapGesture { NotificationCenter.default.post(name: HuddleStore.toggleNotification, object: nil) }
-                .help("Show or hide the Agent Huddle")
             watchToggle
             LiveBadge(store: store, connections: connections) { layout.showSettings = true }
             Menu {
@@ -1003,6 +996,10 @@ struct PanelView: View {
                 Divider()
                 Button("Sessions waiting for you") { Self.openLink("claude://code/needs-input") }
                 Button("Search sessions") { Self.openLink("claude://code/search") }
+                Divider()
+                Button("Show or hide Agent Huddle") {
+                    NotificationCenter.default.post(name: HuddleStore.toggleNotification, object: nil)
+                }
             } label: {
                 Image(systemName: "plus").font(.system(size: 10.5 * scale, weight: .semibold))
             }
@@ -2509,47 +2506,68 @@ private struct SettingsView: View {
                     }
                 }
             }
-            section("Sections") {
-                toggle("Code", $settings.showCode)
+            // What the panel lists, each section with its own options right under it.
+            section("In the panel") {
+                toggle("Code sessions", $settings.showCode)
+                if settings.showCode {
+                    sub {
+                        toggle("Git branch and changes", $settings.showGit)
+                        toggle("Context meter", $settings.showContext)
+                        choice("Keep idle sessions for", $settings.recentHours,
+                               [(6, "6h"), (24, "1d"), (72, "3d"), (168, "7d")])
+                    }
+                }
                 toggle("Pull requests", $settings.showGitHub)
+                if settings.showGitHub && !settings.ignoredPullRequests.isEmpty {
+                    sub {
+                        sublabel("Ignored")
+                        ForEach(settings.ignoredPullRequests.sorted { $0.value < $1.value }, id: \.key) { url, label in
+                            listRow(label) { settings.ignoredPullRequests[url] = nil }
+                        }
+                        if settings.ignoredPullRequests.count > 1 {
+                            link("Show all") { settings.ignoredPullRequests = [:] }
+                        }
+                    }
+                }
                 toggle("Duet tasks", $settings.showDuet)
+                if settings.showDuet {
+                    sub {
+                        choice("Look in on running tasks", $settings.duetPeekMinutes,
+                               [(0, "Off"), (1, "1m"), (2, "2m"), (5, "5m")])
+                        note(settings.duetPeekMinutes == 0
+                             ? "Pulse only sees Duet while it's on screen, so a task that needs you can sit unnoticed while you're somewhere else in Claude."
+                             : "Pulse only sees Duet while it's on screen. A minute after you leave Duet, and then this often while a task is running, Claude's window flips to Duet for a few seconds and back to where you were. It waits for a pause if you're using Claude.")
+                        choice("Check for new tasks", $settings.duetWatchMinutes,
+                               [(0, "Off"), (1, "1m"), (2, "2m"), (5, "5m"), (10, "10m")])
+                        note(settings.duetWatchMinutes == 0
+                             ? "Tasks started from your phone, on a schedule, or by Claude asking later are only found when you open Duet yourself."
+                             : "Even with nothing running, Pulse looks in this often, so tasks started from your phone, on a schedule, or by Claude asking later still reach Needs You. It waits until you've left Claude alone for 45 seconds, then shows Duet for about 2 seconds." + (settings.duetWatchMinutes <= 2 ? " At this pace you may see Claude's window flick to Duet now and then." : ""))
+                    }
+                }
                 toggle("Artifacts", $settings.showArtifacts)
                 toggle("Chats", $settings.showChats)
+                if settings.showChats && !settings.hiddenChats.isEmpty {
+                    sub {
+                        sublabel("Hidden")
+                        ForEach(settings.hiddenChats, id: \.self) { title in
+                            listRow(title) { settings.unhideChat(title) }
+                        }
+                        if settings.hiddenChats.count > 1 {
+                            link("Show all") { settings.hiddenChats = [] }
+                        }
+                    }
+                }
                 toggle("Skills worth creating", $settings.showSkillIdeas)
                 toggle("Your usage and limits", $settings.showUsage)
+                toggle("Larger text as the panel gets wider", $settings.scaleText)
             }
             if let huddle = HuddleStore.current {
                 section("Agent Huddle") { HuddleSettings(store: huddle) }
             }
-            if settings.showDuet {
-                section("Duet") {
-                    choice("Look in on running tasks", $settings.duetPeekMinutes,
-                           [(0, "Off"), (1, "1m"), (2, "2m"), (5, "5m")])
-                    note(settings.duetPeekMinutes == 0
-                         ? "Pulse only sees Duet while it's on screen, so a task that needs you can sit unnoticed while you're somewhere else in Claude."
-                         : "Pulse only sees Duet while it's on screen. A minute after you leave Duet, and then this often while a task is running, Claude's window flips to Duet for a few seconds and back to where you were, so you hear about it when a task needs you. It waits for a pause if you're using Claude.")
-                    choice("Check for new tasks", $settings.duetWatchMinutes,
-                           [(0, "Off"), (1, "1m"), (2, "2m"), (5, "5m"), (10, "10m")])
-                    note(settings.duetWatchMinutes == 0
-                         ? "Tasks started from your phone, on a schedule, or by Claude asking later are only found when you open Duet yourself."
-                         : "Even with nothing running, Pulse looks in this often, so tasks started from your phone, on a schedule, or by Claude asking later still reach Needs You. It waits until you've left Claude alone for 45 seconds, then shows Duet for about 2 seconds." + (settings.duetWatchMinutes <= 2 ? " At this pace you may see Claude's window flick to Duet now and then." : ""))
-                }
-            }
-            screenActivity
-            section("Appearance") {
-                toggle("Larger text as the panel gets wider", $settings.scaleText)
-            }
-            section("On each Code row") {
-                toggle("Git branch and changes", $settings.showGit)
-                toggle("Context meter", $settings.showContext)
-                choice("Keep idle sessions for", $settings.recentHours,
-                       [(6, "6h"), (24, "1d"), (72, "3d"), (168, "7d")])
-            }
             section("Notifications") {
                 toggle("Notifications", $settings.notifyOnFinish)
                 if settings.notifyOnFinish {
-                    // What to be told about. These sit under the master switch above.
-                    Group {
+                    sub {
                         toggle("Sessions done or waiting on you", $settings.notifySessions)
                         if settings.notifySessions {
                             choice("Remind if still waiting", $settings.remindMinutes,
@@ -2559,53 +2577,40 @@ private struct SettingsView: View {
                         toggle("Duet tasks needing input", $settings.notifyDuet)
                         toggle("Chat answers you walked away from", $settings.notifyChats)
                     }
-                    .padding(.leading, 12)
                 } else {
-                    Text("Pulse won't send you any notifications. Everything still shows up in the panel.")
-                        .font(.system(size: 10.5 * scale))
-                        .foregroundStyle(Palette.text3)
-                        .fixedSize(horizontal: false, vertical: true)
+                    note("Pulse won't send you any notifications. Everything still shows up in the panel.")
                 }
             }
-            if !settings.ignoredPullRequests.isEmpty {
-                section("Ignored pull requests") {
-                    ForEach(settings.ignoredPullRequests.sorted { $0.value < $1.value }, id: \.key) { url, label in
-                        HStack {
-                            Text(label)
-                                .font(.system(size: 12 * scale))
-                                .foregroundStyle(Palette.text2)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Spacer(minLength: 8)
-                            link("Show") { settings.ignoredPullRequests[url] = nil }
-                        }
-                    }
-                    if settings.ignoredPullRequests.count > 1 {
-                        link("Show all") { settings.ignoredPullRequests = [:] }
-                    }
-                }
-            }
-            if !settings.hiddenChats.isEmpty {
-                section("Hidden chats") {
-                    ForEach(settings.hiddenChats, id: \.self) { title in
-                        HStack {
-                            Text(title)
-                                .font(.system(size: 12 * scale))
-                                .foregroundStyle(Palette.text2)
-                                .lineLimit(1)
-                            Spacer(minLength: 8)
-                            link("Show") { settings.unhideChat(title) }
-                        }
-                    }
-                    if settings.hiddenChats.count > 1 {
-                        link("Show all") { settings.hiddenChats = [] }
-                    }
-                }
-            }
+            screenActivity
         }
         .padding(.horizontal, 16)
         .padding(.top, 4 * scale)
         .padding(.bottom, 14 * scale)
+    }
+
+    private func sub<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 7) { content() }
+            .padding(.leading, 12)
+    }
+
+    private func sublabel(_ text: String) -> some View {
+        Text(text.uppercased())
+            .font(.system(size: 9 * scale, weight: .semibold))
+            .kerning(0.6)
+            .foregroundStyle(Palette.text3)
+            .padding(.top, 2)
+    }
+
+    private func listRow(_ label: String, show: @escaping () -> Void) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 12 * scale))
+                .foregroundStyle(Palette.text2)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 8)
+            link("Show", action: show)
+        }
     }
 
     private func link(_ label: String, action: @escaping () -> Void) -> some View {
@@ -2640,8 +2645,11 @@ private struct SettingsView: View {
 
     private func choice(_ label: String, _ value: Binding<Int>, _ options: [(Int, String)]) -> some View {
         HStack {
+            // The label wraps before the choices squeeze, so a narrow panel never overflows.
             Text(label).font(.system(size: 12 * scale)).foregroundStyle(Palette.text)
-            Spacer()
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 6)
             HStack(spacing: 2) {
                 ForEach(options, id: \.0) { option in
                     let selected = value.wrappedValue == option.0
@@ -2658,6 +2666,7 @@ private struct SettingsView: View {
             }
             .padding(2)
             .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Palette.track))
+            .fixedSize()
         }
     }
 }
